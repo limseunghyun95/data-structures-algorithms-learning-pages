@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "subject": "Data Structures & Algorithms",
+  "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
+  "accent": "#fbbf24",
+  "totalDays": 84,
+  "updatedAt": "2026-07-29T12:00:00+09:00",
+  "lessons": [
+    {
+      "day": 1,
+      "week": 1,
+      "title": "ADT, data structure, algorithm, program의 경계",
+      "summary": "문제의 연산 계약과 구현 표현, 실행 절차, 완성된 프로그램을 분리해 선택의 근거를 세웁니다.",
+      "path": "day-01.html",
+      "kind": "lesson",
+      "publishedAt": "2026-07-29T12:00:00+09:00"
+    }
+  ]
+}
