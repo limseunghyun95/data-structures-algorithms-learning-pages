@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-07-30T09:01:00+09:00",
+  "updatedAt": "2026-07-31T09:10:43+09:00",
   "lessons": [
     {
       "day": 1,
@@ -23,6 +23,15 @@
       "path": "day-02.html",
       "kind": "lesson",
       "publishedAt": "2026-07-30T09:01:00+09:00"
+    },
+    {
+      "day": 3,
+      "week": 1,
+      "title": "worst/average/amortized complexity",
+      "summary": "단일 최악 비용, 확률 분포의 평균, 연산열 전체의 상각 보장을 구분하고 dynamic array로 세 분석법을 증명합니다.",
+      "path": "day-03.html",
+      "kind": "lesson",
+      "publishedAt": "2026-07-31T09:10:43+09:00"
     }
   ]
 }
