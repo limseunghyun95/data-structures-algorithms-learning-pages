@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-07-31T09:10:43+09:00",
+  "updatedAt": "2026-08-01T09:10:51+09:00",
   "lessons": [
     {
       "day": 1,
@@ -32,6 +32,15 @@
       "path": "day-03.html",
       "kind": "lesson",
       "publishedAt": "2026-07-31T09:10:43+09:00"
+    },
+    {
+      "day": 4,
+      "week": 1,
+      "title": "correctness, invariant, pre/postcondition",
+      "summary": "Hoare-style 계약과 representation·loop invariant, 종료 variant로 binary search의 total correctness를 증명합니다.",
+      "path": "day-04.html",
+      "kind": "lesson",
+      "publishedAt": "2026-08-01T09:10:51+09:00"
     }
   ]
 }
