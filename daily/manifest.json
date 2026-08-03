@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-02T09:17:11+09:00",
+  "updatedAt": "2026-08-03T09:00:20+09:00",
   "lessons": [
     {
       "day": 1,
@@ -50,6 +50,15 @@
       "path": "day-05.html",
       "kind": "lesson",
       "publishedAt": "2026-08-02T09:17:11+09:00"
+    },
+    {
+      "day": 6,
+      "week": 1,
+      "title": "랩: 같은 ADT의 두 표현 benchmark",
+      "summary": "Stack ADT를 array-backed와 linked-node로 구현해 같은 계약을 증명하고 시간·allocation·memory·locality를 공정하게 benchmark합니다.",
+      "path": "day-06.html",
+      "kind": "lab",
+      "publishedAt": "2026-08-03T09:00:20+09:00"
     }
   ]
 }
