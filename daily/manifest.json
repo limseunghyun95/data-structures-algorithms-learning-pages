@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-03T09:00:20+09:00",
+  "updatedAt": "2026-08-05T09:09:47+09:00",
   "lessons": [
     {
       "day": 1,
@@ -59,6 +59,15 @@
       "path": "day-06.html",
       "kind": "lab",
       "publishedAt": "2026-08-03T09:00:20+09:00"
+    },
+    {
+      "day": 7,
+      "week": 1,
+      "title": "리뷰: 측정값과 점근 분석의 차이",
+      "summary": "정적 Membership Index의 전체 lifecycle을 점근 분석과 실제 benchmark로 비교해 crossover, 측정 함정, production 의사결정을 통합합니다.",
+      "path": "day-07.html",
+      "kind": "review",
+      "publishedAt": "2026-08-05T09:09:47+09:00"
     }
   ]
 }
