@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-08T09:10:36+09:00",
+  "updatedAt": "2026-08-09T09:00:54+09:00",
   "lessons": [
     {
       "day": 1,
@@ -86,6 +86,15 @@
       "path": "day-09.html",
       "kind": "lesson",
       "publishedAt": "2026-08-08T09:10:36+09:00"
+    },
+    {
+      "day": 10,
+      "week": 2,
+      "title": "singly/doubly linked list",
+      "summary": "유효한 node handle과 circular sentinel 불변식으로 relink 정당성을 증명하고 search·allocation·locality·lifetime 비용까지 분리합니다.",
+      "path": "day-10.html",
+      "kind": "lesson",
+      "publishedAt": "2026-08-09T09:00:54+09:00"
     }
   ]
 }
