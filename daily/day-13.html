@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 13 · 랩: bounded queue와 backpressure</title>
+</head>
+<body style="margin:0;background:#111827;color:#26323b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#f8fafc;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#312e81;color:#eef2ff">
+          <div style="color:#a5b4fc;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 2 / DAY 13 LAB</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">bounded queue와<br>backpressure</h1>
+          <p style="margin:0;color:#c7d2fe">admission · credit · Little's Law · overload · deadline · load shedding · 120분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #4f46e5;background:#e0e7ff;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            Bounded queue는 과부하를 없애지 않고 유한한 대기 예산으로 바꾼다. Backpressure는 consumer가 감당 가능한 demand·credit을 upstream에 전달하는 제어 계약이며, 그 신호가 불가능할 때는 deadline-aware rejection·load shedding·spill 중 의도한 실패를 선택해야 한다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Bounded queue</strong></td><td style="padding:9px;border:1px solid #a5b4fc">최대 저장 개수가 정해진 queue. 메모리와 최악 대기를 제한하는 대신 full 상태를 API가 처리해야 한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Backpressure</strong></td><td style="padding:9px;border:1px solid #a5b4fc">느린 downstream이 upstream에 생산을 늦추거나 멈추라고 전달하는 피드백.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Flow control</strong></td><td style="padding:9px;border:1px solid #a5b4fc">수신자가 처리·buffer 가능한 양만 송신하도록 제한하는 메커니즘. backpressure의 구체적 형태가 될 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Admission control</strong></td><td style="padding:9px;border:1px solid #a5b4fc">새 작업을 시스템 안으로 받아들일지 입구에서 결정하는 정책.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Load shedding</strong></td><td style="padding:9px;border:1px solid #a5b4fc">시스템 생존과 유용한 처리량을 지키기 위해 초과 작업 일부를 빠르고 의도적으로 거절·폐기하는 것.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Offered load</strong></td><td style="padding:9px;border:1px solid #a5b4fc">시스템에 시도된 전체 부하. 실제로 받아들인 effective load와 구분한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Arrival rate λ</strong></td><td style="padding:9px;border:1px solid #a5b4fc">단위 시간당 도착하는 작업 수. accepted λ와 offered λ를 섞지 않는다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Service rate μ</strong></td><td style="padding:9px;border:1px solid #a5b4fc">단위 시간당 완료 가능한 작업 수. workload와 dependency 상태에 따라 변한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Utilization ρ</strong></td><td style="padding:9px;border:1px solid #a5b4fc">단순 1-server 모델에서 λ/μ. ρ가 1에 가까워지면 작은 변동도 큰 대기로 증폭될 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Queueing delay</strong></td><td style="padding:9px;border:1px solid #a5b4fc">작업이 실제 service를 받기 전 queue에서 기다린 시간.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Little's Law</strong></td><td style="padding:9px;border:1px solid #a5b4fc">안정된 시스템에서 평균 개수 L = effective arrival rate λ × 평균 체류시간 W.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Credit / demand</strong></td><td style="padding:9px;border:1px solid #a5b4fc">consumer가 앞으로 받을 의사가 있다고 명시한 element·byte 수.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Deadline / timeout</strong></td><td style="padding:9px;border:1px solid #a5b4fc">작업 전체가 유효한 절대 종료 시각 / 한 단계가 기다릴 상대 시간. 남은 budget을 전파해야 한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Retry storm</strong></td><td style="padding:9px;border:1px solid #a5b4fc">과부하 실패를 많은 client가 즉시 재시도해 부하를 더 키우는 양의 피드백.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Overload collapse</strong></td><td style="padding:9px;border:1px solid #a5b4fc">부하가 capacity를 넘자 timeout·retry·GC·context switch가 늘어 유용한 throughput까지 급락하는 상태.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Head-of-line blocking</strong></td><td style="padding:9px;border:1px solid #a5b4fc">앞의 느리거나 큰 작업이 뒤의 독립적인 작은 작업을 막는 현상.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><strong>Hysteresis</strong></td><td style="padding:9px;border:1px solid #a5b4fc">과부하 진입과 해제 threshold를 다르게 두어 상태가 빠르게 흔들리는 것을 막는 설계.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">2. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#4f46e5;color:white;border-radius:9px"><strong>Traffic / producer</strong></td><td style="padding:13px;background:#e0e7ff">offered λ, burst 크기·주기, priority, retry behavior</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4338ca;font-weight:800">↓ deadline 유효? rate limit·authentication 먼저, 비용 싼 곳에서 거절</td></tr>
+            <tr><td style="padding:13px;background:#4f46e5;color:white;border-radius:9px"><strong>Admission</strong></td><td style="padding:13px;background:#e0e7ff">credit 있음 → accept · 없음 → wait/timeout/reject/drop/spill</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4338ca;font-weight:800">↓ bounded FIFO: capacity = burst budget이면서 queue-delay budget</td></tr>
+            <tr><td style="padding:13px;background:#4f46e5;color:white;border-radius:9px"><strong>Worker / consumer</strong></td><td style="padding:13px;background:#e0e7ff">concurrency m, service-time distribution, dependency limit, cancellation</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4338ca;font-weight:800">↓ 완료·공간 회수 → demand/credit/window를 upstream으로 반환</td></tr>
+            <tr><td style="padding:13px;background:#3730a3;color:white;border-radius:9px"><strong>Control loop</strong></td><td style="padding:13px;background:#e0e7ff">queue age·p99·reject·in-flight·useful throughput로 조정</td></tr>
+          </table>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #d6a94c;border-radius:10px"><strong>핵심 구분:</strong> queue capacity는 처리 capacity가 아니다. CPU·DB·network가 μ를 정한다. queue를 키우면 짧은 burst는 흡수할 수 있지만 지속적으로 λ&gt;μ이면 backlog·latency를 저장하다 결국 full이 된다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>랩 문제:</strong> 매 tick 12개 요청이 오고 worker는 10개만 완료할 수 있다. reject-new bounded FIFO의 capacity를 12, 120, 1200으로 바꿀 때 throughput, rejection, occupancy, queue wait가 어떻게 달라지는지 측정한다.</p>
+          <ul style="padding-left:22px">
+            <li><strong>입력:</strong> arrival trace, service budget/tick, capacity C, overflow policy, 각 job의 enqueue tick·deadline.</li>
+            <li><strong>출력:</strong> completed, rejected, queue size/age, wait histogram p50/p99/max, invariant 위반.</li>
+            <li><strong>성공 계약:</strong> accepted job은 FIFO로 최대 한 번 완료되고 queue는 C를 넘지 않는다.</li>
+            <li><strong>실패 계약:</strong> full offer는 queue를 바꾸지 않고 명시적 FULL을 반환한다. caller는 retry/drop/503 중 정책을 적용한다.</li>
+            <li><strong>범위:</strong> 먼저 single-thread deterministic simulator로 정책을 검증한다. concurrent synchronization 성능과 실제 service 분포는 별도 load test 대상이다.</li>
+          </ul>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td align="center" style="padding:12px;background:#312e81;color:white"><strong>Producer</strong><br>12/tick</td><td align="center" style="padding:12px;color:#4338ca;font-weight:800">→ offer / FULL →</td><td align="center" style="padding:12px;background:#4f46e5;color:white"><strong>Bounded FIFO</strong><br>0≤size≤C</td><td align="center" style="padding:12px;color:#4338ca;font-weight:800">→ poll →</td><td align="center" style="padding:12px;background:#312e81;color:white"><strong>Worker</strong><br>10/tick</td></tr>
+            <tr><td colspan="5" align="center" style="padding:10px;background:#e0e7ff"><strong>feedback:</strong> free slots / demand / retry-after / rejection metric가 upstream으로 돌아간다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">4. ADT와 상태 계약</h2>
+          <p><strong>Queue abstract value:</strong> FIFO sequence <code>Q=⟨j₀,…,jₙ₋₁⟩</code>, <code>0≤n≤C</code>. <strong>Admission ADT:</strong> <code>offer(j)</code>는 공간이 있으면 <code>Q·⟨j⟩</code>와 ACCEPTED, 없으면 Q를 보존하고 FULL을 반환한다. <code>poll()</code>은 nonempty일 때 <code>(j₀,⟨j₁,…⟩)</code>다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#c7d2fe"><th align="left" style="padding:9px;border:1px solid #a5b4fc">API 형태</th><th align="left" style="padding:9px;border:1px solid #a5b4fc">full/empty 의미</th><th align="left" style="padding:9px;border:1px solid #a5b4fc">사용 시점</th></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc">try/offer</td><td style="padding:9px;border:1px solid #a5b4fc">즉시 status 반환</td><td style="padding:9px;border:1px solid #a5b4fc">event loop, 빠른 shed, caller policy</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc">blocking put/take</td><td style="padding:9px;border:1px solid #a5b4fc">조건이 될 때까지 대기</td><td style="padding:9px;border:1px solid #a5b4fc">전용 worker thread, 반드시 interrupt/shutdown</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc">timed offer/poll</td><td style="padding:9px;border:1px solid #a5b4fc">budget 안에서만 대기</td><td style="padding:9px;border:1px solid #a5b4fc">deadline-aware pipeline</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc">credit request(n)</td><td style="padding:9px;border:1px solid #a5b4fc">demand 없는 publish 금지</td><td style="padding:9px;border:1px solid #a5b4fc">비동기 stream·network window</td></tr>
+          </table>
+          <p>Java 26 <code>BlockingQueue</code>도 exception, special value, indefinite block, timed block 네 형태를 분리한다. “queue에 넣기” 하나로 합치면 latency·cancellation·failure contract가 숨는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">5. Representation invariant와 시스템 보존식</h2>
+          <p>Ring concrete state는 <code>(data,C,head,size)</code>. AF는 <code>Q[i]=data[(head+i) mod C]</code>. Day 12 RI에 운영 counter를 더한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#c7d2fe"><th align="left" style="padding:9px;border:1px solid #a5b4fc">Invariant</th><th align="left" style="padding:9px;border:1px solid #a5b4fc">검출하는 버그</th></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><code>0≤size≤C</code>, C&gt;0이면 data≠NULL·head&lt;C</td><td style="padding:9px;border:1px solid #a5b4fc">overflow, invalid index, storage lifetime</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><code>arrivals = rejected + completed + size</code></td><td style="padding:9px;border:1px solid #a5b4fc">reject-new 모델의 분실·중복 완료</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><code>credit + size = C</code></td><td style="padding:9px;border:1px solid #a5b4fc">receiver capacity보다 더 publish하거나 credit 누수</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc"><code>completed IDs</code>는 unique</td><td style="padding:9px;border:1px solid #a5b4fc">at-most-once local processing 위반</td></tr>
+            <tr><td style="padding:9px;border:1px solid #a5b4fc">head job age ≤ deadline budget</td><td style="padding:9px;border:1px solid #a5b4fc">이미 client가 포기한 stale work 실행</td></tr>
+          </table>
+          <p><strong>정책별 식:</strong> drop-old면 <code>arrivals = rejected-new + dropped-old + completed + size</code>. retry는 새 logical request인지 같은 request의 attempt인지 metric 차원을 분리해야 한다. 그렇지 않으면 성공률과 부하 원인을 해석할 수 없다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">6. 직접 구현: bounded offer/poll + credit</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#1e1b4b;color:#eef2ff;padding:16px;border-radius:10px;font-size:12px"><code>#include &lt;stdbool.h&gt;
+#include &lt;stddef.h&gt;
+#include &lt;stdint.h&gt;
+
+typedef struct { uint64_t id, enqueued_tick; } Job;
+typedef struct { Job *data; size_t capacity, head, size; } BoundedQueue;
+typedef enum { Q_OK, Q_INVALID, Q_FULL, Q_EMPTY } QStatus;
+
+static bool valid(const BoundedQueue *q) {
+    if (!q) return false;
+    if (q-&gt;capacity == 0)
+        return !q-&gt;data &amp;&amp; q-&gt;head == 0 &amp;&amp; q-&gt;size == 0;
+    return q-&gt;data &amp;&amp; q-&gt;head &lt; q-&gt;capacity &amp;&amp;
+           q-&gt;size &lt;= q-&gt;capacity &amp;&amp; (q-&gt;size || q-&gt;head == 0);
+}
+static size_t offset(size_t start, size_t delta, size_t cap) {
+    size_t room = cap - start;
+    return delta &gt;= room ? delta - room : start + delta;
+}
+static QStatus offer(BoundedQueue *q, Job job) {
+    if (!valid(q)) return Q_INVALID;
+    if (q-&gt;size == q-&gt;capacity) return Q_FULL;
+    q-&gt;data[offset(q-&gt;head, q-&gt;size, q-&gt;capacity)] = job;
+    ++q-&gt;size;
+    return Q_OK;
+}
+static QStatus poll(BoundedQueue *q, Job *out) {
+    if (!valid(q) || !out) return Q_INVALID;
+    if (q-&gt;size == 0) return Q_EMPTY;
+    Job job = q-&gt;data[q-&gt;head];
+    if (q-&gt;size == 1) q-&gt;head = q-&gt;size = 0;
+    else {
+        q-&gt;head = q-&gt;head + 1 == q-&gt;capacity ? 0 : q-&gt;head + 1;
+        --q-&gt;size;
+    }
+    *out = job;
+    return Q_OK;
+}
+
+/* Receiver가 C credit으로 시작. emit마다 1 소비, poll마다 1 반환. */
+static bool try_emit(BoundedQueue *q, size_t *credit, Job job) {
+    if (!q || !credit || *credit == 0) return false;
+    --*credit;
+    QStatus s = offer(q, job);
+    if (s != Q_OK) { ++*credit; return false; } /* failure atomic */
+    return true;
+}
+static QStatus consume_and_grant(BoundedQueue *q, size_t *credit, Job *out) {
+    if (!credit) return Q_INVALID;
+    QStatus s = poll(q, out);
+    if (s == Q_OK) ++*credit;
+    return s;
+}</code></pre>
+          <p>Production concurrent queue에는 lock/condition variable 또는 검증된 atomic algorithm이 추가되어야 한다. 위 코드는 backpressure 상태 전이와 invariant를 분리 검증하는 single-thread reference model이다. <code>try_emit</code>은 offer 실패 시 credit을 돌려 failure atomicity를 지킨다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">7. 정당성 증명</h2>
+          <p><strong>Credit 안전성 귀납:</strong> 초기 <code>credit=C, size=0</code>이므로 합은 C. emit은 credit을 1 줄이고 queue size를 1 늘려 합을 보존한다. credit=0이면 상태 변화가 없다. consume은 size를 1 줄이고 credit을 1 늘린다. 따라서 모든 operation prefix에서 <code>credit+size=C</code>, 특히 <code>size≤C</code>다.</p>
+          <p><strong>보존식 귀납:</strong> 초기 counter가 모두 0. offer 성공은 arrivals와 size를 각각 1 증가, full은 arrivals와 rejected를 각각 1 증가, poll 성공은 size를 1 감소하고 completed를 1 증가한다. 각 transition이 <code>A=R+D+|Q|</code>를 보존하므로 job은 사라지거나 복제되지 않는다.</p>
+          <p><strong>중요한 한계:</strong> 이 증명은 capacity 안전성과 accounting correctness다. consumer가 영원히 progress한다는 liveness, 공정성, crash 후 exactly-once를 증명하지 않는다. 안전성과 생존성을 면접에서 구분한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">8. 시간·공간·amortized complexity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#c7d2fe"><th align="left" style="padding:8px;border:1px solid #a5b4fc">연산</th><th style="padding:8px;border:1px solid #a5b4fc">시간</th><th style="padding:8px;border:1px solid #a5b4fc">추가 공간</th><th align="left" style="padding:8px;border:1px solid #a5b4fc">숨은 비용</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">bounded offer/poll</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">worst Θ(1)</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">Θ(1)</td><td style="padding:8px;border:1px solid #a5b4fc">lock/atomic contention, wakeup</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">wait with condition</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">operation Θ(1), wait unbounded</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">waiter state</td><td style="padding:8px;border:1px solid #a5b4fc">scheduler, cancellation, spurious wakeup</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">histogram record</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">Θ(1)</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">Θ(bucket)</td><td style="padding:8px;border:1px solid #a5b4fc">range·resolution·coordinated omission</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">scan percentile</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">Θ(bucket)</td><td align="center" style="padding:8px;border:1px solid #a5b4fc">Θ(1)</td><td style="padding:8px;border:1px solid #a5b4fc">report path에만 수행</td></tr>
+          </table>
+          <p>Bounded ring에는 resize가 없어 offer/poll의 amortized와 worst가 모두 Θ(1)이다. 하지만 “Θ(1) call”과 “bounded response time”은 다르다. <code>put()</code>이 full에서 기다리는 wall-clock 시간은 O 표기로 해결되지 않으며 deadline·shutdown 계약이 필요하다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">9. 실험 결과: 큰 queue가 만든 것은 무엇인가</h2>
+          <p><strong>조건:</strong> 10,000 tick 동안 매 tick 12 arrivals 후 최대 10 service, reject-new FIFO. 총 offered 120,000, service ceiling 100,000.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#c7d2fe"><th style="padding:8px;border:1px solid #a5b4fc">C</th><th style="padding:8px;border:1px solid #a5b4fc">완료</th><th style="padding:8px;border:1px solid #a5b4fc">거절</th><th style="padding:8px;border:1px solid #a5b4fc">평균 Q</th><th style="padding:8px;border:1px solid #a5b4fc">wait p99</th><th style="padding:8px;border:1px solid #a5b4fc">max</th></tr>
+            <tr><td align="center" style="padding:8px;border:1px solid #a5b4fc">12</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">100,000</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">19,998</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">2.00</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">1 tick</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">1</td></tr>
+            <tr><td align="center" style="padding:8px;border:1px solid #a5b4fc">120</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">100,000</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">19,890</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">109.70</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">11 ticks</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">11</td></tr>
+            <tr><td align="center" style="padding:8px;border:1px solid #a5b4fc">1200</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">100,000</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">18,810</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">1,154.66</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">119 ticks</td><td align="right" style="padding:8px;border:1px solid #a5b4fc">119</td></tr>
+          </table>
+          <p><strong>해석:</strong> 처리 ceiling은 모두 100,000으로 같다. 큰 C는 시작 transient에서 rejection을 조금 늦췄지만 steady overload를 해결하지 못했고 p99를 119배로 키웠다. 종료 시 남은 2/110/1190개도 보존식과 정확히 맞는다.</p>
+          <p style="font-size:13px;color:#64748b">Apple clang 21.0.0, arm64 macOS 26.5.2. ASan/UBSan build와 -O3 build를 실행. 시뮬레이터 자체 65,535 interleaving 전수 검증; -O3 전체 실행 real 0.38s. 이 wall time은 queue library 성능 비교가 아니라 재현성 확인이다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">10. Little's Law로 capacity를 latency로 번역</h2>
+          <p>안정된 시스템에서 <code>L=λW</code>. MIT 6.02 자료의 면적 증명처럼 시간축 아래 queue-size 면적은 모든 job의 대기시간 합과 같다. 따라서 평균 queue occupancy를 effective throughput으로 나누면 평균 queue delay를 얻는다.</p>
+          <div style="padding:16px;background:#e0f2fe;border:1px solid #7dd3fc;border-radius:10px"><strong>Back-of-the-envelope:</strong> worker pool이 초당 μ=1,000개를 처리하고 queueing budget이 50ms라면 FIFO backlog budget은 대략 <code>μ×0.05=50</code>개다. service time과 concurrency를 포함한 전체 in-flight budget, burst 분포, p99는 별도 검증해야 한다.</div>
+          <ul style="padding-left:22px">
+            <li>Little's Law의 λ는 실제 system을 통과한 effective rate다. rejected offered rate를 넣으면 식이 어긋난다.</li>
+            <li>평균에 대한 식이므로 p99를 보장하지 않는다. heavy-tail service, correlated burst, priority를 load test한다.</li>
+            <li>λ≥μ가 지속되면 unbounded queue는 안정 조건을 잃고 W가 계속 자란다. bounded queue는 대신 rejection을 만든다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">11. Backpressure, shedding, rate limit은 다르다</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#c7d2fe"><th align="left" style="padding:8px;border:1px solid #a5b4fc">메커니즘</th><th align="left" style="padding:8px;border:1px solid #a5b4fc">신호</th><th align="left" style="padding:8px;border:1px solid #a5b4fc">목표·한계</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">Backpressure</td><td style="padding:8px;border:1px solid #a5b4fc">request(n), credit, pause</td><td style="padding:8px;border:1px solid #a5b4fc">생산 가능 source를 downstream 속도에 맞춤</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">Flow control</td><td style="padding:8px;border:1px solid #a5b4fc">byte/element window</td><td style="padding:8px;border:1px solid #a5b4fc">receiver buffer 보호; end-to-end overload를 자동 해결하지 않음</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">Rate limiting</td><td style="padding:8px;border:1px solid #a5b4fc">token/quota per identity</td><td style="padding:8px;border:1px solid #a5b4fc">정책·공정성; 실제 dynamic capacity와 다를 수 있음</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">Load shedding</td><td style="padding:8px;border:1px solid #a5b4fc">503/RESOURCE_EXHAUSTED/drop</td><td style="padding:8px;border:1px solid #a5b4fc">source가 멈출 수 없거나 이미 overload일 때 생존</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">Concurrency limit</td><td style="padding:8px;border:1px solid #a5b4fc">max in-flight permit</td><td style="padding:8px;border:1px solid #a5b4fc">dependency와 memory 보호; queue limit과 함께 사용</td></tr>
+          </table>
+          <p>HTTP/2는 receiver가 stream·connection byte window를 알리는 credit 기반 hop-by-hop flow control이다. Reactive Streams는 subscriber가 요청한 demand보다 많은 <code>onNext</code>를 보내지 못하게 한다. 두 사례 모두 “receiver가 bound를 통제”하지만 service-level deadline·retry·admission까지 대신하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">12. Error handling과 shutdown protocol</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Invalid:</strong> null storage/output, zero·overflow capacity, 잘못된 demand n≤0을 구분한다.</li>
+            <li><strong>Full:</strong> 명시적 retryable status와 retry-after/backoff 정보를 반환하되 무조건 retryable로 표시하지 않는다.</li>
+            <li><strong>Timeout:</strong> queue 진입 전과 worker 시작 전 남은 deadline을 확인한다. 만료된 작업은 비싼 dependency call 전에 제거한다.</li>
+            <li><strong>Cancellation:</strong> waiting producer·consumer와 queued owning object 모두 정리 경로가 있어야 한다.</li>
+            <li><strong>Close:</strong> OPEN→DRAINING→CLOSED state를 두고 새 offer 거절, 기존 item drain, 모든 waiter 깨움, 최종 통계를 남긴다.</li>
+            <li><strong>Partial failure:</strong> credit를 줄인 뒤 enqueue가 실패하면 credit를 복구한다. batch offer의 all-or-nothing 여부를 API에 적는다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>놓치기 쉬운 점:</strong> Java <code>BlockingQueue</code> 자체에는 표준 close/shutdown이 없다. poison pill 하나는 consumer가 여러 개일 때 부족할 수 있고, queue가 full이면 poison enqueue도 막힌다. 별도 lifecycle state와 broadcast cancellation을 설계한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">13. 실무 best practice와 anti-pattern</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#c7d2fe"><th align="left" style="padding:8px;border:1px solid #a5b4fc">Best practice</th><th align="left" style="padding:8px;border:1px solid #a5b4fc">Anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">capacity를 byte·job·deadline budget으로 산정</td><td style="padding:8px;border:1px solid #a5b4fc">OOM이 날 때까지 unbounded queue</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">queue age p50/p99/max와 oldest age 관측</td><td style="padding:8px;border:1px solid #a5b4fc">queue length 평균만 모니터링</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">accepted/rejected/dropped/completed conservation dashboard</td><td style="padding:8px;border:1px solid #a5b4fc">drop을 debug log에만 남김</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">retry budget + exponential backoff + jitter + idempotency</td><td style="padding:8px;border:1px solid #a5b4fc">timeout 즉시 무한 retry</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">tenant별 queue/limit·weighted fairness</td><td style="padding:8px;border:1px solid #a5b4fc">한 noisy tenant가 전역 FIFO를 채움</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">open-loop arrival generator로 overload load test</td><td style="padding:8px;border:1px solid #a5b4fc">응답 뒤 다음 요청을 보내는 closed-loop만 측정</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a5b4fc">degraded response와 cheap rejection을 앞단에 배치</td><td style="padding:8px;border:1px solid #a5b4fc">DB 작업 후 deadline 초과를 발견</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">14. benchmark·load test 주의점</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Coordinated omission:</strong> client가 느린 응답을 기다리며 다음 요청을 늦추면 실제 overload arrival을 생성하지 못하고 latency가 좋아 보인다.</li>
+            <li><strong>Warm-up과 collapse:</strong> 평균 처리량만 보지 말고 step/ramp/spike/soak 후 recovery time과 useful throughput을 본다.</li>
+            <li><strong>Histogram:</strong> 평균만이 아니라 queue wait와 service time을 분리해 p50/p95/p99/p99.9·max를 기록한다.</li>
+            <li><strong>Work mix:</strong> 작은/큰 job, cache hit/miss, tenant, dependency slow/fail, cancellation 비율을 실제 분포로 재현한다.</li>
+            <li><strong>Failure mode:</strong> 목표는 최대 QPS 숫자가 아니라 overload에서 memory bound, deadline 준수, 빠른 rejection, 자동 회복이다.</li>
+            <li><strong>실험 한계:</strong> 오늘 deterministic tick 결과는 인과를 보여 주는 model이다. production capacity 값은 실제 open-loop load test로 정한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">15. 최소 반례와 장애 연쇄</h2>
+          <p><strong>“Queue를 10배 키우면 overload가 해결된다”의 최소 반례:</strong> λ=2 job/tick, μ=1 job/tick이 영원히 지속되면 크기 C의 queue는 C tick 정도 늦게 full이 될 뿐 장기 throughput은 1이다. 기다리는 job의 age만 커진다.</p>
+          <p><strong>장애 연쇄:</strong> dependency slowdown → service time 증가·μ 감소 → in-flight와 queue 증가 → deadline 초과 → client retry → offered λ 증가 → CPU/GC/thread 증가 → useful μ 추가 감소. 이 양의 피드백을 admission, deadline propagation, retry budget, isolation으로 끊는다.</p>
+          <p><strong>Backpressure 불가능 source:</strong> sensor tick, UDP, mouse event처럼 생산을 멈출 수 없다면 bounded buffer 뒤 선택지는 drop-new, drop-old, sample/coalesce, spill, fail뿐이다. “backpressure를 켠다”는 말만으로 물리 source가 느려지지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">16. 직접 테스트 체크리스트</h2>
+          <ol style="padding-left:22px">
+            <li>capacity 0/1, empty poll, full offer, wrap-around, output canary를 ASan/UBSan으로 검사.</li>
+            <li>emit/consume 모든 짧은 interleaving에서 <code>credit+size=C</code> assertion.</li>
+            <li>arrival/service transition마다 보존식과 completed ID uniqueness 검사.</li>
+            <li>full, timeout, cancellation, close가 동시에 발생하는 model-based state test.</li>
+            <li>dependency service를 느리게·실패하게 주입해 queue age와 rejection이 예상 방향인지 확인.</li>
+            <li>retry를 켠 상태와 끈 상태의 offered/effective load·recovery time 비교.</li>
+          </ol>
+          <p><strong>오늘 실제 검증:</strong> capacity 3에서 길이 0..15의 emit/consume <strong>65,535개 모든 operation sequence</strong>를 전수 검사했다. 매 prefix에서 RI와 <code>credit+size=capacity</code>가 성립했고 ASan/UBSan을 통과했다. overload simulation은 매 tick 보존식을 검사했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">17. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q1. Queue capacity를 어떻게 정하겠습니까?</strong><br>메모리가 아니라 queueing SLO부터 역산한다. service rate·worker concurrency·service distribution, 허용 wait, burst 크기/주기, element bytes를 측정한다. Little's Law로 1차 근사 후 open-loop load test에서 p99·reject·recovery를 검증한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q2. Backpressure와 load shedding의 차이는 무엇입니까?</strong><br>Backpressure는 consumer demand를 upstream 생산률에 피드백해 초과 생성을 예방한다. Shedding은 이미 초과했거나 source를 제어할 수 없을 때 일부 작업을 의도적으로 거절한다. 둘은 함께 쓸 수 있고 deadline·retry 계약이 필요하다.</div>
+          <div style="padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q3. 큰 queue가 왜 tail latency와 장애를 악화할 수 있습니까?</strong><br>μ를 늘리지 않고 backlog age·memory만 늘린다. client deadline 뒤 stale work, retry amplification, tenant HOL blocking이 생긴다. queue age와 conservation metrics, bounded admission, early reject, cancellation, per-tenant isolation으로 방어한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">18. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>평균 accepted λ=800/s, 평균 queue length L=40이면 평균 queue wait는?</li>
+            <li>capacity 100, size 70, credit 30에서 publisher가 31개를 보내면 어떤 invariant가 깨지는가?</li>
+            <li>λ=120/s, μ=100/s가 지속될 때 unbounded queue가 안정적인가?</li>
+            <li>full에서 block하는 것과 reject하는 것 중 항상 더 안전한 선택이 있는가?</li>
+            <li>Day 12 ring RI가 오늘 system conservation proof의 어느 부분을 담당하는가?</li>
+            <li>Day 9 geometric growth를 producer-consumer queue에 그대로 쓰면 어떤 tail failure가 생기는가?</li>
+            <li>Day 11 call stack overflow와 오늘 queue overload의 공통 설계 원칙은?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) W=L/λ=0.05s=50ms. 2) credit+size=C와 receiver bound. 3) 아니며 backlog는 평균 20/s 증가. 4) 없다. thread·deadline·upstream control에 따라 timed wait/reject를 선택. 5) queue 내부가 C를 넘거나 분실되지 않는 local safety. 6) resize pause·OOM·unbounded latency와 overload 은폐. 7) 유한 resource budget을 명시하고 overflow를 정상 API 경로로 다룬다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">19. 다음 날 연결</h2>
+          <p>Day 14는 <strong>리뷰: 연산 빈도로 sequence 선택</strong>이다. contiguous/dynamic array, singly/doubly linked list, stack, queue, deque를 동일 workload 표에서 비교하고, ADT 계약·locality·allocation·failure·concurrency를 근거로 면접 선택을 방어한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">출처 · 1차 자료</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://web.mit.edu/6.02/www/f2011/handouts/17.pdf" style="color:#4338ca">MIT 6.02 Lecture 17 — Network performance metrics</a>: queueing delay, stable system의 Little's Law와 면적 증명.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html" style="color:#4338ca">Java SE 26 — BlockingQueue</a>: exception/special value/block/timeout API와 happens-before, shutdown 부재.</li>
+            <li><a href="https://github.com/reactive-streams/reactive-streams-jvm" style="color:#4338ca">Reactive Streams JVM Specification</a>: non-blocking backpressure, subscriber demand, bounded buffer 원칙.</li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc9113.html#name-flow-control" style="color:#4338ca">RFC 9113 — HTTP/2 Flow Control</a>: receiver-controlled stream/connection credit window와 resource bound.</li>
+            <li><a href="https://sre.google/sre-book/addressing-cascading-failures/" style="color:#4338ca">Google SRE Book — Addressing Cascading Failures</a>: queue management, early rejection, deadline propagation, retry amplification.</li>
+            <li><a href="https://builder.aws.com/content/3Eun1EEyX6p2e3VYNyRLSJzLuMV/using-load-shedding-to-avoid-overload" style="color:#4338ca">Amazon Builders' Library — Using load shedding to avoid overload</a>: 초과 작업을 일찍 거절해 useful work와 가용성을 보호하는 실무 원칙.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-12 Asia/Seoul · 공식 문서의 현재 버전을 확인했으며 실험 수치는 이 deterministic workload에만 해당한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
