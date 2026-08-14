@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 14 · 리뷰: 연산 빈도로 sequence 선택</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#0f766e;color:#f8fafc">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 2 / DAY 14 REVIEW</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">연산 빈도로<br>sequence 선택을 방어하라</h1>
+          <p style="margin:0;color:#ccfbf1">ADT contract → operation trace → weighted cost → locality → failure policy · 100분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #0f766e;background:#ccfbf1;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            “배열이 빠르다”, “연결 리스트 삽입은 O(1)”가 아니라, 실제 요청에서 어떤 연산이 몇 번 발생하고 위치를 이미 알고 있는지 세어 전체 비용·locality·reference 안정성·overflow 정책을 함께 비교해야 한다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Sequence</strong></td><td style="padding:9px;border:1px solid #99d5ce">값 자체가 아니라 외부에서 정한 순서와 rank를 보존하는 ADT. 첫째·마지막·i번째가 의미를 갖는다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Operation mix</strong></td><td style="padding:9px;border:1px solid #99d5ce">read, append, prepend, erase, iterate가 각각 몇 번·어느 위치에서 일어나는지 나타낸 빈도 벡터.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Position discovery</strong></td><td style="padding:9px;border:1px solid #99d5ce">삽입·삭제할 node나 index를 찾는 비용. mutation 자체와 분리해야 한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Random access</strong></td><td style="padding:9px;border:1px solid #99d5ce">앞 원소를 거치지 않고 i번째 원소에 접근하는 능력.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Contiguous</strong></td><td style="padding:9px;border:1px solid #99d5ce">원소 저장 영역이 주소상 연속이라는 뜻. array index 공식과 cache locality의 기반이다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Iterator/reference stability</strong></td><td style="padding:9px;border:1px solid #99d5ce">container mutation 뒤에도 보관한 위치·원소 참조가 계속 유효한 성질.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Invalidation</strong></td><td style="padding:9px;border:1px solid #99d5ce">resize·insert·erase 뒤 기존 pointer/iterator가 더 이상 안전하지 않은 상태.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Locality</strong></td><td style="padding:9px;border:1px solid #99d5ce">곧 사용할 데이터가 가까운 cache line/page에 함께 있어 memory stall이 줄어드는 성질.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Amortized</strong></td><td style="padding:9px;border:1px solid #99d5ce">드문 비싼 resize 비용을 충분히 긴 연산열 전체에 나눈 평균 상한. 한 번의 tail latency 보장은 아니다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Bounded</strong></td><td style="padding:9px;border:1px solid #99d5ce">capacity 상한이 정해져 overflow 시 block/reject/drop 같은 명시적 결과를 갖는 상태.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><strong>Weighted cost</strong></td><td style="padding:9px;border:1px solid #99d5ce">연산별 비용에 실제 빈도를 곱해 합산한 workload 전체 비용 모델.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">2. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>① Contract</strong></td><td style="padding:13px;background:#ecfdf5">순서, 중복, capacity, 오류, 참조 lifetime 정의</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ 요청 trace에서 연산과 위치를 계수</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>② Workload vector</strong></td><td style="padding:13px;background:#ecfdf5"><code>(get, scan, front, back, middle, erase)</code> 빈도·n 분포</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ position discovery + mutation + allocation 분리</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>③ Candidate model</strong></td><td style="padding:13px;background:#ecfdf5">array / list / deque / ring의 RI·복잡도·무효화 비교</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ correctness gate 후 representative benchmark</td></tr>
+            <tr><td style="padding:13px;background:#115e59;color:white;border-radius:9px"><strong>④ Production choice</strong></td><td style="padding:13px;background:#ecfdf5">SLO·memory·locality·concurrency·failure·운영성으로 결정</td></tr>
+          </table>
+          <p><strong>결정식:</strong> 후보 D의 1차 모델은 <code>C(D)=Σ f(op,pos,n)×c_D(op,pos,n)+allocation+miss+failure</code>다. 점근 복잡도는 <code>c_D</code>의 성장률을 제한하지만, 실제 선택에는 빈도와 상수가 들어간다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> 하나의 in-memory 작업 목록에 아래 100만 연산이 반복된다. 올바른 sequence 표현을 고르고 선택을 방어한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#a7f3d0"><th align="left" style="padding:9px;border:1px solid #99d5ce">연산</th><th style="padding:9px;border:1px solid #99d5ce">빈도</th><th align="left" style="padding:9px;border:1px solid #99d5ce">위치·계약</th></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><code>get(i)</code></td><td align="right" style="padding:9px;border:1px solid #99d5ce">600k</td><td style="padding:9px;border:1px solid #99d5ce">i는 균일 random, 현재 n은 10k~200k</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><code>append(x)</code></td><td align="right" style="padding:9px;border:1px solid #99d5ce">220k</td><td style="padding:9px;border:1px solid #99d5ce">오른쪽 끝, 실패 시 기존 값 보존</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><code>pop_front()</code></td><td align="right" style="padding:9px;border:1px solid #99d5ce">150k</td><td style="padding:9px;border:1px solid #99d5ce">empty는 정상 오류 결과</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><code>erase(handle)</code></td><td align="right" style="padding:9px;border:1px solid #99d5ce">20k</td><td style="padding:9px;border:1px solid #99d5ce">유효 handle이 이미 주어짐</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99d5ce"><code>scan()</code></td><td align="right" style="padding:9px;border:1px solid #99d5ce">10k</td><td style="padding:9px;border:1px solid #99d5ce">전체 순서대로 읽고 합산</td></tr>
+          </table>
+          <p><strong>입력:</strong> 64-bit task ID와 payload reference. <strong>출력:</strong> 요청 결과와 순서 보존. <strong>제약:</strong> 256MiB budget, p99 5ms, 동시에 읽는 thread가 존재, raw pointer를 외부에 오래 보관하지 않는다.</p>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #d6a94c;border-radius:10px"><strong>첫 결론:</strong> 한 표현으로 모든 연산을 최적화하려는 질문 자체가 잘못될 수 있다. random access와 유효 handle erase가 모두 중요하면 <code>stable slot store + order index</code>처럼 두 구조를 합성해야 한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">4. Sequence ADT와 표현 불변식</h2>
+          <p><strong>ADT 계약:</strong> 유한한 값 열 <code>S=⟨x₀,…,xₙ₋₁⟩</code>. <code>get(i)</code>는 <code>0≤i&lt;n</code>에서 xᵢ, append/prepend는 순서를 보존해 길이를 1 늘리고, erase는 지정 원소를 정확히 한 번 제거한다. invalid index·empty·full·allocation failure를 서로 다른 결과로 둔다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#a7f3d0"><th align="left" style="padding:8px;border:1px solid #99d5ce">표현</th><th align="left" style="padding:8px;border:1px solid #99d5ce">Abstraction function</th><th align="left" style="padding:8px;border:1px solid #99d5ce">핵심 RI</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">Dynamic array</td><td style="padding:8px;border:1px solid #99d5ce"><code>data[0:size]</code></td><td style="padding:8px;border:1px solid #99d5ce"><code>0≤size≤capacity</code>, live prefix 연속, 나머지 미사용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">Sentinel DLL</td><td style="padding:8px;border:1px solid #99d5ce">sentinel.next부터 순회한 값</td><td style="padding:8px;border:1px solid #99d5ce">양방향 link 대칭, cycle은 sentinel에서만 닫힘, count 일치</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">Segmented deque</td><td style="padding:8px;border:1px solid #99d5ce">논리 index를 block+offset으로 사상</td><td style="padding:8px;border:1px solid #99d5ce">양끝 위치가 유효 block 범위, 논리 길이와 slot 수 일치</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">Bounded ring</td><td style="padding:8px;border:1px solid #99d5ce"><code>buf[(head+i)%C]</code></td><td style="padding:8px;border:1px solid #99d5ce"><code>C&gt;0, 0≤size≤C, tail=(head+size)%C</code></td></tr>
+          </table>
+          <p><strong>계약과 표현을 분리해야 하는 이유:</strong> Stack/Queue는 허용 연산을 줄인 ADT이고 array/list/deque/ring은 표현이다. “queue는 linked list”가 아니라 bounded 여부·양끝 연산·random access·memory 정책에 맞춰 표현을 선택한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">5. 복잡도 표: 숨은 전제까지 읽기</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr style="background:#a7f3d0"><th style="padding:7px;border:1px solid #99d5ce">연산</th><th style="padding:7px;border:1px solid #99d5ce">Dyn array</th><th style="padding:7px;border:1px solid #99d5ce">DLL</th><th style="padding:7px;border:1px solid #99d5ce">Deque</th><th style="padding:7px;border:1px solid #99d5ce">Ring</th></tr>
+            <tr><td style="padding:7px;border:1px solid #99d5ce">get(i)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">끝 Θ(1), 중간 Θ(n)*</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99d5ce">append</td><td align="center" style="padding:7px;border:1px solid #99d5ce">amort. Θ(1)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">≈Θ(1)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1) or full</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99d5ce">pop front</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">≈Θ(1)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99d5ce">erase(handle)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n) shift</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(1)**</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n)</td><td align="center" style="padding:7px;border:1px solid #99d5ce">일반 순서 보존 Θ(n)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99d5ce">scan</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n), 연속</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n), pointer chase</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n), block</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n), ≤2 spans</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99d5ce">storage</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n)+slack</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n)+2 links/node</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(n)+block map</td><td align="center" style="padding:7px;border:1px solid #99d5ce">Θ(C)</td></tr>
+          </table>
+          <p style="font-size:13px;color:#64748b">* Python <code>deque</code> 공식 문서 기준 중앙 indexed access는 O(n), 양끝은 O(1). **이미 소유권이 검증된 유효 node handle이 주어진 경우만. key/index를 먼저 찾으면 Θ(n)이 추가된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">6. 가중 비용으로 1차 탈락시키기</h2>
+          <p>위 workload에서 dynamic array는 150k번의 front shift가 있고, DLL은 600k번의 random traversal이 있다. 둘 다 선형 항의 계수가 너무 크다. deque는 양끝에는 맞지만 중앙 random access가 많아 불리하고, fixed-capacity ring은 random access와 양끝에 맞지만 arbitrary stable handle erase를 순서 보존하면서 Θ(1)로 할 수 없다.</p>
+          <div style="padding:16px;background:#e0f2fe;border:1px solid #7dd3fc;border-radius:10px"><strong>합성안:</strong> payload는 generation이 붙은 stable slot array에 저장하고, 순서는 block/ring index로 유지한다. external handle은 <code>(slot,generation)</code>으로 stale handle을 검출한다. erase는 slot 회수와 order index 갱신을 분리하며, order를 엄격히 유지하면 여전히 이동 비용이 있음을 숨기지 않는다.</div>
+          <p><strong>요구사항을 바꾸는 질문:</strong> erase 뒤 순서가 중요하지 않다면 dynamic array의 <code>swap-with-last</code>로 Θ(1) 삭제가 가능하다. 그러나 abstract sequence를 바꾸므로 API 계약 승인 없이 적용하면 버그다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">7. 정당성: weighted choice와 최소 반례</h2>
+          <ol style="padding-left:22px">
+            <li><strong>후보 적격성:</strong> 먼저 각 후보 구현이 같은 ADT postcondition과 failure contract를 만족해야 한다. 틀린 후보의 빠른 benchmark는 무의미하다.</li>
+            <li><strong>비용 상한:</strong> trace의 각 연산을 해당 후보의 증명된 cost에 대응시키고 합한다. 빈도가 음수가 아니므로 각 항의 upper bound 합은 전체 upper bound다.</li>
+            <li><strong>교차점:</strong> workload가 바뀌면 가중치가 바뀌므로 최적 후보도 바뀔 수 있다. 선택 결과가 아니라 입력 vector와 가정을 저장한다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>최소 반례 1:</strong> linked list에서 index 500 삭제를 “O(1)”이라고 말하면, handle 없이 head부터 찾는 Θ(n)을 누락했다. <strong>최소 반례 2:</strong> <code>[A,B,C]</code>에서 B를 swap-with-last로 삭제하면 <code>[A,C]</code>는 값 집합은 맞지만 원래 상대 순서를 보존하는 Sequence postcondition을 어긴다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">8. 직접 구현: trace를 증거로 바꾸는 profiler</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#134e4a;color:#ecfdf5;padding:16px;border-radius:10px;font-size:13px"><code>from collections import Counter
+from dataclasses import dataclass
+
+ALLOWED = {"get", "scan", "push_front", "push_back",
+           "pop_front", "pop_back", "erase_handle"}
+
+@dataclass(frozen=True)
+class Op:
+    name: str
+    n: int
+    position: str  # front/back/middle/random/already_known
+
+def profile(trace):
+    counts = Counter()
+    max_n = 0
+    for op in trace:
+        if op.name not in ALLOWED:
+            raise ValueError(f"unknown operation: {op.name}")
+        if op.n &lt; 0:
+            raise ValueError("negative size")
+        counts[(op.name, op.position)] += 1
+        max_n = max(max_n, op.n)
+    return counts, max_n</code></pre>
+          <p>instrumentation은 request path에서 매번 lock을 잡지 말고 thread-local counter나 sampling을 사용한다. key·payload 같은 민감 값은 기록하지 않고 operation, size bucket, position class, latency, error만 남긴다. trace가 profile overhead로 workload를 바꾸지 않는지 검증한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">9. 직접 테스트와 property</h2>
+          <ol style="padding-left:22px">
+            <li>모든 후보를 Python <code>list</code> reference model과 동일 operation sequence로 differential test한다.</li>
+            <li>empty, capacity 1, wrap, duplicate, invalid index, stale handle, allocation failure를 포함한다.</li>
+            <li>각 prefix 뒤 representation invariant와 논리 sequence equality를 검사한다.</li>
+            <li>dynamic array resize 실패 전후 snapshot이 같아야 한다. 새 buffer 완성 후 commit한다.</li>
+            <li>iterator invalidation이 있는 API는 mutation 전후 iterator를 재사용하지 못하게 test·type/API로 제한한다.</li>
+            <li>concurrent 구현이라면 linearization point와 memory ordering을 별도 증명한다. 단일 thread 복잡도 표는 thread safety를 말하지 않는다.</li>
+          </ol>
+          <p><strong>최소 property:</strong> 임의의 유효 operation sequence에 대해 <code>iterate(candidate)==reference</code>, <code>len(candidate)==len(reference)</code>, invalid operation은 상태를 바꾸지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">10. benchmark 결과와 해석</h2>
+          <p><strong>환경:</strong> CPython 3.9.1, arm64 macOS 26.5.2, 각 7회 median. 오른쪽/임의 접근은 n=200,000, 왼쪽은 n=12,000, 전체 순회는 100회 합산. 결과는 이 runtime·입력에만 해당한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#a7f3d0"><th align="left" style="padding:8px;border:1px solid #99d5ce">Workload</th><th align="right" style="padding:8px;border:1px solid #99d5ce">list</th><th align="right" style="padding:8px;border:1px solid #99d5ce">deque</th><th align="left" style="padding:8px;border:1px solid #99d5ce">해석</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">right append+pop 200k</td><td align="right" style="padding:8px;border:1px solid #99d5ce">8.329ms</td><td align="right" style="padding:8px;border:1px solid #99d5ce">8.904ms</td><td style="padding:8px;border:1px solid #99d5ce">둘 다 적합, 상수는 비슷</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">left push+pop 12k</td><td align="right" style="padding:8px;border:1px solid #99d5ce">42.920ms</td><td align="right" style="padding:8px;border:1px solid #99d5ce">0.480ms</td><td style="padding:8px;border:1px solid #99d5ce">list shift 비용 노출</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">random get 200k</td><td align="right" style="padding:8px;border:1px solid #99d5ce">4.694ms</td><td align="right" style="padding:8px;border:1px solid #99d5ce">30.438ms</td><td style="padding:8px;border:1px solid #99d5ce">중앙 deque index가 불리</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">100 sequential sums</td><td align="right" style="padding:8px;border:1px solid #99d5ce">57.677ms</td><td align="right" style="padding:8px;border:1px solid #99d5ce">60.989ms</td><td style="padding:8px;border:1px solid #99d5ce">둘 다 선형, list 약간 우세</td></tr>
+          </table>
+          <p><strong>benchmark 함정:</strong> 서로 다른 n의 절대 시간을 행끼리 비교하지 않는다. 왼쪽 list는 Θ(n²) 전체 workload라 큰 n을 쓰면 실험 시간만 폭증한다. warm-up, GC, allocator, payload 크기, hit distribution, p50/p99를 실제 서비스와 맞춘다. microbenchmark가 end-to-end queueing·lock contention을 대신하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">11. Memory, locality, lifetime deep dive</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Array:</strong> 주소는 <code>base+i×sizeof(T)</code>. hardware prefetch와 SIMD에 유리하지만 growth reallocation이 모든 참조를 무효화할 수 있다.</li>
+            <li><strong>Linked list:</strong> node마다 link·allocator metadata·padding이 들고 다음 주소가 load 결과에 의존해 memory-level parallelism이 낮다. O(1) relink가 cache miss보다 싸다는 보장은 없다.</li>
+            <li><strong>Deque:</strong> 여러 연속 block을 map으로 잇는 구현은 양끝 성장과 일부 locality를 절충한다. 언어별 구현 세부와 reference/iterator 규칙을 문서에서 확인한다.</li>
+            <li><strong>Ring:</strong> capacity가 고정되면 resize tail과 OOM 경로를 제거하고 최대 memory를 계산할 수 있다. 대신 full 정책과 wrap arithmetic이 계약의 일부다.</li>
+            <li><strong>Handle:</strong> raw pointer보다 slot index+generation을 쓰면 use-after-free와 ABA형 stale reuse를 검출하기 쉽다. generation overflow 정책도 필요하다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">12. Error handling과 failure atomicity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#a7f3d0"><th align="left" style="padding:8px;border:1px solid #99d5ce">오류</th><th align="left" style="padding:8px;border:1px solid #99d5ce">안전한 계약</th><th align="left" style="padding:8px;border:1px solid #99d5ce">금지할 동작</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">invalid index</td><td style="padding:8px;border:1px solid #99d5ce">범위 검사 후 domain error, 상태 불변</td><td style="padding:8px;border:1px solid #99d5ce">wrap·clamp로 조용히 다른 값 접근</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">empty/full</td><td style="padding:8px;border:1px solid #99d5ce">EMPTY/FULL/TIMEOUT을 구분</td><td style="padding:8px;border:1px solid #99d5ce">sentinel 값으로 정상 payload와 혼동</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">allocation failure</td><td style="padding:8px;border:1px solid #99d5ce">새 저장소 준비 후 commit, 기존 sequence 유지</td><td style="padding:8px;border:1px solid #99d5ce">capacity부터 바꾸고 복사 실패</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">stale handle</td><td style="padding:8px;border:1px solid #99d5ce">owner+generation 검증 후 reject</td><td style="padding:8px;border:1px solid #99d5ce">주소가 재사용됐다는 이유로 수락</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">integer overflow</td><td style="padding:8px;border:1px solid #99d5ce"><code>size+1</code>, bytes 계산 전 checked arithmetic</td><td style="padding:8px;border:1px solid #99d5ce">작은 allocation 뒤 큰 copy</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">concurrent mutation</td><td style="padding:8px;border:1px solid #99d5ce">snapshot/lock/owner thread 계약</td><td style="padding:8px;border:1px solid #99d5ce">thread-safe append를 전체 compound operation 안전으로 오해</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">13. 실무 best practice와 anti-pattern</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#a7f3d0"><th align="left" style="padding:8px;border:1px solid #99d5ce">Best practice</th><th align="left" style="padding:8px;border:1px solid #99d5ce">Anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">production trace를 operation/position/size bucket으로 계수</td><td style="padding:8px;border:1px solid #99d5ce">면접 복잡도 표만 보고 선택</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">find 비용과 mutate 비용을 분리</td><td style="padding:8px;border:1px solid #99d5ce">linked list 삭제를 무조건 O(1)이라 표기</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">memory bytes/element·allocation count·cache miss 측정</td><td style="padding:8px;border:1px solid #99d5ce">wall-clock 평균 하나만 측정</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">iterator/handle lifetime을 API 문서와 type에 반영</td><td style="padding:8px;border:1px solid #99d5ce">mutation 뒤 보관 pointer 재사용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">bounded capacity·backpressure·shutdown을 계약화</td><td style="padding:8px;border:1px solid #99d5ce">unbounded growth를 정상 확장으로 간주</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99d5ce">요구 충돌 시 composite structure와 중복 state의 RI 설계</td><td style="padding:8px;border:1px solid #99d5ce">한 container가 모든 축에서 최고라고 주장</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">14. 30분 실습: 내 workload로 선택 바꾸기</h2>
+          <ol style="padding-left:22px">
+            <li><strong>5분:</strong> 실제 기능 하나를 골라 operation, position, n, payload bytes, error를 100개 요청에서 계수한다.</li>
+            <li><strong>5분:</strong> array/list/deque/ring의 cost vector를 표로 만들고 총 선형 항을 계산한다.</li>
+            <li><strong>10분:</strong> 같은 결과를 내는 Python list/deque 후보를 differential test한 뒤 대표 workload를 7회 반복한다.</li>
+            <li><strong>5분 실패 주입:</strong> empty, bounded full, MemoryError 역할의 주입 exception, stale handle을 넣어 상태가 보존되는지 본다.</li>
+            <li><strong>5분:</strong> 결과를 <code>선택·가정·측정·실패정책·재검토 조건</code>의 ADR 5줄로 작성한다.</li>
+          </ol>
+          <p><strong>예상 관찰:</strong> 오른쪽 stack workload에서는 list와 deque가 비슷할 수 있지만, 왼쪽 queue workload에서는 deque가 급격히 우세하고, 중앙 random index가 많아지면 list가 다시 유리해진다. cleanup은 생성한 임시 benchmark 파일만 제거하고 원본 자료는 건드리지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q1. 배열과 linked list 중 무엇을 고르겠습니까?</strong><br>ADT 계약 → n과 operation/position 빈도 → position discovery 여부 → 점근 비용 → locality·allocation·bytes/element → iterator 안정성 → OOM/동시성 → 대표 benchmark와 재검토 조건 순으로 답한다. “상황에 따라”에서 멈추지 말고 수치를 가정한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q2. linked list의 중간 삭제는 왜 O(1)이 아닐 수 있습니까?</strong><br>유효한 node handle이 이미 있고 소유권/lifetime 검증이 끝났을 때 relink만 Θ(1)이다. index/key로 위치를 찾으면 Θ(n), allocator/free와 cache miss도 실제 비용이며 stale handle·iterator 계약을 방어해야 한다.</div>
+          <div style="padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q3. random access와 stable handle erase가 모두 많다면?</strong><br>한 container 선택을 거부하고 slot map/generation handle + order index 같은 합성안을 제시한다. 두 representation의 일관성 RI, partial failure rollback, memory overhead, 순서 보존 삭제 비용, concurrency linearization을 함께 설명한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li><code>erase(node*)</code>가 Θ(1)이려면 숨은 전제 세 가지는?</li>
+            <li>dynamic array append의 amortized Θ(1)이 p99 Θ(1)을 뜻하지 않는 이유는?</li>
+            <li>Python list로 FIFO를 만들 때 <code>pop(0)</code>이 느린 이유는?</li>
+            <li>bounded ring이 unbounded deque보다 운영상 나을 수 있는 조건은?</li>
+            <li>Day 8 locality와 Day 10 linked list 분석이 같은 Θ(n) scan을 다르게 보는 이유는?</li>
+            <li>Day 12 circular buffer RI와 Day 13 credit invariant의 관계는?</li>
+            <li>순서 보존 삭제를 swap-with-last로 최적화하면 어떤 층의 계약을 바꾸는가?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) 유효·동일 owner·아직 live인 handle과 위치 탐색 완료. 2) resize 한 번은 Θ(n)이며 상각은 연산열 평균. 3) 뒤 원소를 한 칸씩 이동. 4) capacity/SLO가 정해지고 overflow 정책이 정상 흐름일 때. 5) array는 연속 접근, list는 pointer chasing·allocation. 6) ring의 local bound를 credit가 producer-consumer protocol로 확장. 7) Sequence의 상대 순서 postcondition.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">17. 다음 날 연결</h2>
+          <p>Day 15는 Week 3 Hashing의 시작인 <strong>hash function, bucket, load factor</strong>다. Sequence처럼 먼저 ADT 계약을 고정한 뒤 key를 bucket으로 사상하는 흐름, collision이 불가피한 이유, load factor가 expected cost와 memory를 어떻게 연결하는지 다룬다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/c08a3b63dfe5f6f6b32257d35f86ae63_MIT6_006S20_r02.pdf" style="color:#0f766e">MIT 6.006 Recitation 2 — Sequence Implementations</a>: sequence interface와 array, linked list, dynamic array의 연산별 worst/amortized 표.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/resources/lecture-2-data-structures-and-dynamic-arrays/" style="color:#0f766e">MIT 6.006 Lecture 2 — Data Structures and Dynamic Arrays</a>: interface와 data structure의 분리, dynamic array.</li>
+            <li><a href="https://docs.python.org/3/library/collections.html#collections.deque" style="color:#0f766e">Python 3 Standard Library — collections.deque</a>: 양끝 append/pop O(1), 중앙 indexed access O(n), bounded maxlen.</li>
+            <li><a href="https://docs.python.org/3/tutorial/datastructures.html#using-lists-as-queues" style="color:#0f766e">Python Tutorial — Using Lists as Queues</a>: list front insert/pop의 이동 비용과 deque 권장.</li>
+            <li><a href="https://eel.is/c++draft/sequence.reqmts" style="color:#0f766e">C++ Working Draft — Sequence container requirements</a>: sequence container 종류와 공통 요구사항.</li>
+            <li><a href="https://eel.is/c++draft/vector.modifiers" style="color:#0f766e">C++ Working Draft — vector modifiers</a>: reallocation 조건, 선형 비용, reference/pointer/iterator invalidation, exception effect.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-14 Asia/Seoul · 공식 문서와 대학 자료를 확인했으며 benchmark 수치는 명시된 환경에만 해당한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
