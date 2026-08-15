@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-14T09:09:11+09:00",
+  "updatedAt": "2026-08-15T09:19:47+09:00",
   "lessons": [
     {
       "day": 1,
@@ -131,6 +131,15 @@
       "path": "day-14.html",
       "kind": "review",
       "publishedAt": "2026-08-14T09:09:11+09:00"
+    },
+    {
+      "day": 15,
+      "week": 3,
+      "title": "hash function, bucket, load factor",
+      "summary": "Map ADT의 equality/hash 불변식부터 collision·universal hashing·load factor의 expected cost, locality·공격 입력·failure atomicity까지 연결합니다.",
+      "path": "day-15.html",
+      "kind": "lesson",
+      "publishedAt": "2026-08-15T09:19:47+09:00"
     }
   ]
 }

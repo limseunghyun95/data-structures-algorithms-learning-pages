@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 15 · hash function, bucket, load factor</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#7c2d12;color:#fff7ed">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 3 / DAY 15</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">key를 bucket으로 보내는<br>규칙과 비용을 증명하라</h1>
+          <p style="margin:0;color:#fed7aa">Map ADT → hash family → bucket index → collision resolution → load factor · 105분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #c2410c;background:#ffedd5;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            해시 테이블의 expected O(1)은 “hash가 빠르다”가 아니라, 같은 key는 같은 bucket 후보를 만들고 서로 다른 key의 충돌이 잘 분산되며 load factor를 제한한다는 계약 위에서만 성립한다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Map / Dictionary</strong></td><td style="padding:9px;border:1px solid #fdba74">고유한 key를 value에 연결하는 ADT. 같은 key를 다시 넣으면 보통 기존 value를 교체한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Key universe U</strong></td><td style="padding:9px;border:1px solid #fdba74">가능한 모든 key의 집합. 실제 저장된 key 수 n보다 매우 클 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Hash function</strong></td><td style="padding:9px;border:1px solid #fdba74">큰 key 공간을 정수 hash code 또는 작은 table index로 사상하는 함수.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Hash code</strong></td><td style="padding:9px;border:1px solid #fdba74">key 내용에서 계산한 정수 지문. 식별자가 아니므로 서로 다른 key가 같은 값을 가질 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Bucket / slot</strong></td><td style="padding:9px;border:1px solid #fdba74">table index 하나가 가리키는 충돌 처리 단위. chaining에서는 여러 entry의 chain, open addressing에서는 보통 한 slot이다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Collision</strong></td><td style="padding:9px;border:1px solid #fdba74">서로 다른 key가 같은 bucket 후보로 사상되는 사건. 오류가 아니라 반드시 처리해야 하는 정상 상태다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Load factor α</strong></td><td style="padding:9px;border:1px solid #fdba74"><code>α=n/m</code>. n은 entry 수, m은 bucket/slot 수. 시간과 메모리 밀도를 연결한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Chaining</strong></td><td style="padding:9px;border:1px solid #fdba74">같은 bucket의 entry들을 list·vector 등 별도 container에 함께 두는 충돌 해소법.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Open addressing</strong></td><td style="padding:9px;border:1px solid #fdba74">entry를 table 자체에 두고 충돌 시 probe sequence로 다른 slot을 찾는 방식.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Universal family</strong></td><td style="padding:9px;border:1px solid #fdba74">임의의 서로 다른 두 key가 충돌할 확률을 작게 제한하도록 설계한 hash 함수들의 집합. 실행마다 하나를 무작위 선택한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Hash flooding</strong></td><td style="padding:9px;border:1px solid #fdba74">공격자가 충돌 key를 대량 입력해 expected O(1)을 최악 Θ(n)으로 무너뜨리는 DoS 패턴.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fdba74"><strong>Representation invariant</strong></td><td style="padding:9px;border:1px solid #fdba74">구현 상태가 항상 만족해야 하는 규칙. 예: 모든 entry가 자신의 hash bucket에 있고 key가 중복되지 않는다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">2. Architecture / lookup flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:30%;padding:13px;background:#9a3412;color:white;border-radius:9px"><strong>① Canonical key</strong></td><td style="padding:13px;background:#fff7ed">equality에 쓰는 불변 field·encoding 확정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ hash(key, secret) 계산 · key 길이만큼 O(|key|)</td></tr>
+            <tr><td style="padding:13px;background:#9a3412;color:white;border-radius:9px"><strong>② Bucket index</strong></td><td style="padding:13px;background:#fff7ed"><code>index = reduce(hash, m)</code>, 항상 <code>0≤index&lt;m</code></td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ collision resolution은 hash가 아닌 equality로 확인</td></tr>
+            <tr><td style="padding:13px;background:#9a3412;color:white;border-radius:9px"><strong>③ Candidate scan</strong></td><td style="padding:13px;background:#fff7ed">chain 또는 probe를 따라 <code>stored_key == key</code></td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ found / absent / capacity·allocation error</td></tr>
+            <tr><td style="padding:13px;background:#7c2d12;color:white;border-radius:9px"><strong>④ Operation result</strong></td><td style="padding:13px;background:#fff7ed">value 반환·교체·삽입, RI와 오류 원자성 보존</td></tr>
+          </table>
+          <p><strong>읽기 경로:</strong> <code>request key → canonical bytes → keyed hash → bucket index → candidate equality checks → value</code>. 관측해야 할 지표는 p50/p99 latency뿐 아니라 α, max chain/probe, resize 횟수, hash 계산 시간, 충돌 분포다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> API gateway가 64-bit tenant ID를 key로 하여 quota state를 찾는다. 평균 20만, 최대 100만 entry를 저장하고 초당 15만 lookup·2만 update·1천 delete를 처리해야 한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fed7aa"><th align="left" style="padding:8px;border:1px solid #fdba74">축</th><th align="left" style="padding:8px;border:1px solid #fdba74">질문</th><th align="left" style="padding:8px;border:1px solid #fdba74">이 사례의 답</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">정확성</td><td style="padding:8px;border:1px solid #fdba74">중복 key와 missing은?</td><td style="padding:8px;border:1px solid #fdba74">put은 교체, get/delete missing은 명시적 NOT_FOUND</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">분포</td><td style="padding:8px;border:1px solid #fdba74">key를 공격자가 고를 수 있는가?</td><td style="padding:8px;border:1px solid #fdba74">tenant ID는 외부 입력, seed를 예측 못하게 해야 함</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">크기</td><td style="padding:8px;border:1px solid #fdba74">n의 평균·최대·변동은?</td><td style="padding:8px;border:1px solid #fdba74">200k 평균, 1M hard limit, burst 존재</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">SLO</td><td style="padding:8px;border:1px solid #fdba74">평균인가 tail인가?</td><td style="padding:8px;border:1px solid #fdba74">lookup p99 2ms, resize pause는 별도 통제</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">메모리</td><td style="padding:8px;border:1px solid #fdba74">bucket slack·node 비용은?</td><td style="padding:8px;border:1px solid #fdba74">512MiB, bytes/entry와 allocator overhead 측정</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">동시성</td><td style="padding:8px;border:1px solid #fdba74">누가 mutation하는가?</td><td style="padding:8px;border:1px solid #fdba74">shard owner 1개, reader snapshot 계약</td></tr>
+          </table>
+          <div style="margin-top:14px;padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>먼저 분리할 것:</strong> 해시 테이블은 정렬 순서·범위 검색·최소/최대·prefix 검색을 기본 제공하지 않는다. 그런 연산이 핵심이면 ordered tree나 trie가 후보이며 “평균 O(1)”만 보고 map을 고르면 안 된다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">4. Map ADT, abstraction function, RI</h2>
+          <p><strong>ADT 상태:</strong> 유한한 부분함수 <code>M: K ⇀ V</code>. <code>get(k)</code>는 정의되어 있으면 M(k), 아니면 NOT_FOUND. <code>put(k,v)</code> 뒤 M(k)=v이고 다른 key의 mapping은 그대로다. <code>delete(k)</code>는 k만 제거한다.</p>
+          <p><strong>Chaining representation:</strong> 길이 m의 bucket array <code>B[0..m-1]</code>와 entry 수 n. Abstraction function은 모든 bucket의 <code>(key,value)</code>를 합쳐 map으로 해석한다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1:</strong> <code>m&gt;0</code>, <code>len(B)=m</code>, <code>n=Σ len(B[i])</code>.</li>
+            <li><strong>RI-2:</strong> 모든 entry e는 <code>B[index(e.key)]</code>에만 존재한다.</li>
+            <li><strong>RI-3:</strong> equality 기준으로 같은 key는 전체 table에 최대 하나다.</li>
+            <li><strong>RI-4:</strong> key가 table에 머무는 동안 equality와 hash에 참여하는 field는 변하지 않는다.</li>
+            <li><strong>RI-5:</strong> <code>x==y ⇒ hash(x)==hash(y)</code>. 역은 필요 없다. 같은 hash라고 같은 key는 아니다.</li>
+          </ol>
+          <p><strong>왜 equality가 마지막 판정인가?</strong> hash code는 후보를 좁히는 값일 뿐이다. 64-bit hash에도 가능한 key가 더 많으면 충돌은 존재한다. hash만 비교해 값을 반환하면 서로 다른 tenant의 상태가 섞이는 correctness·보안 버그가 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">5. Collision은 왜 피할 수 없는가: 최소 증명</h2>
+          <p>가능한 key가 u개이고 bucket이 m개이며 <code>u&gt;m</code>라 하자. 모든 key가 서로 다른 bucket으로 간다면 m개 bucket에 u개 key를 하나씩 넣어야 한다. 하지만 bucket은 m개뿐이므로 비둘기집 원리에 의해 최소 두 key는 같은 bucket으로 간다. 따라서 collision-free를 일반 동적 map의 전제로 둘 수 없다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>최소 반례:</strong> <code>h(k)=k mod 8</code>이면 key 1과 9가 같은 bucket 1이다. bucket에 value 하나만 덮어쓰면 1의 mapping이 사라진다. 올바른 구현은 collision resolution 뒤 equality로 1과 9를 구별한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">6. Load factor가 expected cost를 만드는 과정</h2>
+          <p>n개 entry와 m개 bucket에서 <code>α=n/m</code>다. chaining에서 key가 bucket에 균등하게 분산된다고 가정하면 bucket 하나의 기대 chain 길이는 α다. hash·array 접근 Θ(1)에 chain 비교 Θ(α)가 더해져 search는 expected <code>Θ(1+α)</code>다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fed7aa"><th align="left" style="padding:8px;border:1px solid #fdba74">상황</th><th style="padding:8px;border:1px solid #fdba74">α</th><th align="left" style="padding:8px;border:1px solid #fdba74">해석</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">n=500, m=1000</td><td align="center" style="padding:8px;border:1px solid #fdba74">0.5</td><td style="padding:8px;border:1px solid #fdba74">빈 bucket이 많고 memory slack이 큼</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">n=1000, m=1000</td><td align="center" style="padding:8px;border:1px solid #fdba74">1.0</td><td style="padding:8px;border:1px solid #fdba74">평균 1 entry/bucket이지만 max chain은 1이 아님</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">n=5000, m=1024</td><td align="center" style="padding:8px;border:1px solid #fdba74">4.88</td><td style="padding:8px;border:1px solid #fdba74">chaining은 표현 가능, 비교 수와 node 비용 증가</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">open addressing</td><td align="center" style="padding:8px;border:1px solid #fdba74">&lt;1 필수</td><td style="padding:8px;border:1px solid #fdba74">빈 slot이 없으면 새 key를 넣을 수 없음</td></tr>
+          </table>
+          <p><strong>중요:</strong> α는 평균 밀도이지 분포 품질이 아니다. α=0.5여도 모든 key가 한 bucket에 몰리면 lookup은 Θ(n)이다. 반대로 chaining에서는 α가 1보다 클 수 있다. 구현 방식별 임계값을 문서로 확인해야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">7. Expected, amortized, worst를 분리하라</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr style="background:#fed7aa"><th align="left" style="padding:8px;border:1px solid #fdba74">연산</th><th style="padding:8px;border:1px solid #fdba74">좋은 분포·α=O(1)</th><th style="padding:8px;border:1px solid #fdba74">최악</th><th align="left" style="padding:8px;border:1px solid #fdba74">숨은 비용</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">get/contains</td><td align="center" style="padding:8px;border:1px solid #fdba74">expected Θ(1)</td><td align="center" style="padding:8px;border:1px solid #fdba74">Θ(n)</td><td style="padding:8px;border:1px solid #fdba74">hash O(|key|), equality, cache miss</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">put existing</td><td align="center" style="padding:8px;border:1px solid #fdba74">expected Θ(1)</td><td align="center" style="padding:8px;border:1px solid #fdba74">Θ(n)</td><td style="padding:8px;border:1px solid #fdba74">old value lifecycle·exception</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">put new</td><td align="center" style="padding:8px;border:1px solid #fdba74">expected amort. Θ(1)*</td><td align="center" style="padding:8px;border:1px solid #fdba74">Θ(n)</td><td style="padding:8px;border:1px solid #fdba74">allocation·resize/rehash pause</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">delete</td><td align="center" style="padding:8px;border:1px solid #fdba74">expected Θ(1)</td><td align="center" style="padding:8px;border:1px solid #fdba74">Θ(n)</td><td style="padding:8px;border:1px solid #fdba74">open addressing tombstone는 Day 17</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">iterate</td><td align="center" style="padding:8px;border:1px solid #fdba74">Θ(n+m)**</td><td align="center" style="padding:8px;border:1px solid #fdba74">Θ(n+m)</td><td style="padding:8px;border:1px solid #fdba74">capacity 과대 설정 시 빈 bucket scan</td></tr>
+          </table>
+          <p style="font-size:13px;color:#64748b">* resize를 geometric growth로 수행할 때의 상각 비용이며 한 번의 put p99를 보장하지 않는다. **구체 구현에 따라 iteration layout은 다르지만 capacity도 비용 축이라는 점은 같다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">8. Universal hashing: 가정을 구현으로 옮기기</h2>
+          <p>“입력 key가 랜덤하다”는 서비스에서 방어하기 어려운 가정이다. 대신 함수 family H에서 실행마다 h를 무작위 선택해, 임의의 서로 다른 <code>kᵢ,kⱼ</code>에 대해 <code>Pr[h(kᵢ)=h(kⱼ)]≤1/m</code>을 보장하는 universal hashing을 쓸 수 있다.</p>
+          <p>MIT 6.006의 정수 key 예시는 <code>hₐᵦ(k)=(((a·k+b) mod p) mod m)</code>이며 p는 key universe보다 큰 소수, <code>a≠0</code>이고 a,b를 무작위로 고른다. 특정 seed에 collision이 사라진다는 뜻이 아니라, seed 선택에 대한 기대 chain 길이를 제한한다.</p>
+          <ol style="padding-left:22px">
+            <li>key kᵢ와 같은 bucket에 들어온 kⱼ를 indicator <code>Xᵢⱼ∈{0,1}</code>로 둔다.</li>
+            <li>universality로 서로 다른 key마다 <code>E[Xᵢⱼ]≤1/m</code>.</li>
+            <li>기댓값의 선형성으로 <code>E[chain(i)]≤1+(n-1)/m&lt;1+α</code>.</li>
+            <li>따라서 α=O(1)이면 lookup은 seed 선택에 대해 expected O(1). 독립 입력 분포를 가정하지 않는다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">9. 직접 구현: fixed-capacity chaining map</h2>
+          <p>오늘은 resize를 숨기지 않기 위해 정수 key 범위가 정해진 bounded map을 만든다. Day 18에서 rehash를 붙인다. 새 key가 max load를 넘으면 기존 상태를 보존한 채 FULL을 반환한다.</p>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#431407;color:#fff7ed;padding:16px;border-radius:10px;font-size:13px"><code>P = 2_305_843_009_213_693_951  # 2^61-1 prime
+
+class FixedHashMap:
+    def __init__(self, m, a, b, max_load=4.0):
+        if m &lt;= 0 or not (1 &lt;= a &lt; P) or not (0 &lt;= b &lt; P):
+            raise ValueError("invalid hash parameters")
+        self.buckets = [[] for _ in range(m)]
+        self.size = 0
+        self.a, self.b, self.max_load = a, b, max_load
+
+    def _index(self, key):
+        if type(key) is not int or not (0 &lt;= key &lt; P):
+            raise ValueError("key must be int in [0, P)")
+        return ((self.a * key + self.b) % P) % len(self.buckets)
+
+    def put(self, key, value):
+        bucket = self.buckets[self._index(key)]
+        for entry in bucket:          # hash는 후보, equality가 판정
+            if entry[0] == key:
+                old = entry[1]
+                entry[1] = value
+                return ("REPLACED", old)
+        if (self.size + 1) / len(self.buckets) &gt; self.max_load:
+            return ("FULL", None)     # failure atomic: 아직 mutation 없음
+        bucket.append([key, value])    # MemoryError면 size도 아직 그대로
+        self.size += 1
+        return ("INSERTED", None)
+
+    def get(self, key):
+        for stored_key, value in self.buckets[self._index(key)]:
+            if stored_key == key:
+                return ("FOUND", value)
+        return ("NOT_FOUND", None)</code></pre>
+          <p><strong>구현 리뷰:</strong> replacement는 load limit과 무관하게 가능해야 한다. 새 entry append가 성공한 뒤에만 size를 증가시켜야 한다. 실제 Python list append의 MemoryError 처리와 value 교체 중 user code 예외 같은 언어 세부까지 strong guarantee가 필요한지는 API에서 정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">10. 정당성 증명과 테스트 전략</h2>
+          <p><strong>get correctness:</strong> 찾는 key k가 map에 있다면 RI-2에 의해 entry는 정확히 <code>B[index(k)]</code>에 있다. loop가 bucket의 모든 entry를 검사하므로 RI-3의 유일한 equality match를 반환한다. 없다면 같은 bucket 전체를 검사한 뒤 NOT_FOUND이므로 거짓 양성이 없다.</p>
+          <p><strong>put preservation:</strong> 기존 key면 그 entry의 value만 바꿔 bucket 위치·key 집합·size가 유지된다. 새 key면 올바른 bucket에 하나 추가하고 size를 1 늘려 RI-1~3을 보존한다. FULL·validation·allocation failure가 mutation 전에 발생하면 추상 map은 그대로다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>예제:</strong> key 1과 9가 같은 bucket인 작은 m에서 둘 다 put/get/delete되는지 확인한다.</li>
+            <li><strong>대체:</strong> 같은 key를 두 번 put하면 size는 그대로이고 마지막 value가 나온다.</li>
+            <li><strong>Property:</strong> 임의 operation sequence마다 Python <code>dict</code> reference와 mapping·size가 같다.</li>
+            <li><strong>RI 검사:</strong> 모든 entry의 실제 bucket, total count, key uniqueness를 각 prefix 뒤 검사한다.</li>
+            <li><strong>실패 주입:</strong> invalid key, FULL, append MemoryError, equality exception 뒤 snapshot이 계약대로 보존되는지 본다.</li>
+            <li><strong>분포:</strong> random·sequential·common-prefix·stride·attacker-chosen key 각각에 max/p95 chain histogram을 측정한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">11. Benchmark: 같은 α, 133배 다른 lookup</h2>
+          <p><strong>환경:</strong> CPython 3.9.1, arm64 macOS 26.5.2, chaining bucket 1,024개, key 5,000개, α=4.8828125, 모든 key 1회 lookup, 각 5회 median. 동일 ADT·동일 α에서 index 함수만 바꿨다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fed7aa"><th align="left" style="padding:8px;border:1px solid #fdba74">Indexer / 입력</th><th align="right" style="padding:8px;border:1px solid #fdba74">사용 bucket</th><th align="right" style="padding:8px;border:1px solid #fdba74">max chain</th><th align="right" style="padding:8px;border:1px solid #fdba74">lookup</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74"><code>k mod m</code> / <code>k=i·m</code></td><td align="right" style="padding:8px;border:1px solid #fdba74">1 / 1,024</td><td align="right" style="padding:8px;border:1px solid #fdba74">5,000</td><td align="right" style="padding:8px;border:1px solid #fdba74">347.333ms</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">multiply-add-mod-p / 같은 key</td><td align="right" style="padding:8px;border:1px solid #fdba74">1,024 / 1,024</td><td align="right" style="padding:8px;border:1px solid #fdba74">6</td><td align="right" style="padding:8px;border:1px solid #fdba74">2.610ms</td></tr>
+          </table>
+          <p>두 table 모두 RI와 결과가 맞고 α도 같다. 나쁜 함수는 모든 key를 한 bucket으로 보내 최악 Θ(n)을 만들었다. 이 실험은 특정 Python과 key set의 반례이지 universal family의 통계 증명 자체는 아니다. good seed 하나의 결과를 일반 보장처럼 말하지 않는다.</p>
+          <p><strong>benchmark 주의:</strong> 사전 생성한 key/query를 사용해 RNG와 allocation을 timed region에서 뺀다. hit/miss 비율, key 길이, equality 비용, α, chain/probe histogram, warm-up, GC, CPU affinity, p50/p99를 기록한다. 내장 <code>dict</code>와 순수 Python 구현의 절대 시간은 구현 계층이 달라 공정한 알고리즘 비교가 아니다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">12. Memory·locality·lifetime deep dive</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Bucket array:</strong> m을 크게 잡으면 α와 chain은 줄지만 빈 bucket·iteration·cache footprint가 커진다. bytes/entry는 payload 외 metadata까지 측정한다.</li>
+            <li><strong>Chaining:</strong> node-per-entry면 pointer·allocator metadata·fragmentation과 pointer chasing이 추가된다. bucket별 작은 contiguous vector는 locality가 좋지만 erase 이동 비용이 있다.</li>
+            <li><strong>Open addressing:</strong> table 안에서 probe해 locality와 메모리 밀도가 좋을 수 있으나 α가 1에 가까워질수록 probe가 길어지고 deletion 상태가 복잡해진다.</li>
+            <li><strong>Key storage:</strong> 긴 string을 매 lookup마다 hash하면 O(|key|). immutable key에 hash를 cache할 수 있지만 객체 lifetime·seed 변경·memory overhead를 고려한다.</li>
+            <li><strong>Reference stability:</strong> resize·erase가 entry 주소와 iterator를 무효화할 수 있다. 언어 container의 정확한 계약을 확인하고 외부에 내부 주소를 오래 노출하지 않는다.</li>
+            <li><strong>Concurrency:</strong> hash 계산이 thread-safe여도 map의 복합 put-if-absent가 atomic인 것은 아니다. shard/lock/version/snapshot과 linearization point가 별도 필요하다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">13. Error handling과 공격 입력</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fed7aa"><th align="left" style="padding:8px;border:1px solid #fdba74">실패</th><th align="left" style="padding:8px;border:1px solid #fdba74">안전한 처리</th><th align="left" style="padding:8px;border:1px solid #fdba74">놓치기 쉬운 위험</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">mutable key</td><td style="padding:8px;border:1px solid #fdba74">불변 key/value object 사용, mutation 금지</td><td style="padding:8px;border:1px solid #fdba74">hash가 바뀌어 원래 bucket에서 찾지 못함</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">hash/equals 불일치</td><td style="padding:8px;border:1px solid #fdba74"><code>x==y ⇒ hash(x)==hash(y)</code> property test</td><td style="padding:8px;border:1px solid #fdba74">논리상 같은 key가 중복 저장</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">collision flood</td><td style="padding:8px;border:1px solid #fdba74">예측 불가 per-process seed, key/count limit, chain/probe 경보</td><td style="padding:8px;border:1px solid #fdba74">평균 QPS만 보면 tail·CPU DoS를 놓침</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">capacity/overflow</td><td style="padding:8px;border:1px solid #fdba74">checked <code>ceil(expected/load)</code>, hard limit, FULL 구분</td><td style="padding:8px;border:1px solid #fdba74">산술 overflow 뒤 작은 allocation·out-of-bounds</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">allocation failure</td><td style="padding:8px;border:1px solid #fdba74">새 node/table 완성 후 commit, 상태 snapshot 검증</td><td style="padding:8px;border:1px solid #fdba74">size·metadata를 먼저 변경해 RI 파괴</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">seed 고정</td><td style="padding:8px;border:1px solid #fdba74">production은 CSPRNG seed, test만 명시적 고정</td><td style="padding:8px;border:1px solid #fdba74">재현성을 위해 방어 seed를 공개·고정</td></tr>
+          </table>
+          <p><strong>암호학적 hash와 table hash를 구분:</strong> 파일 무결성·서명에는 SHA-2 같은 collision-resistant digest가 필요하다. in-memory table에는 짧은 key에 빠른 keyed hash가 필요하다. 목적과 위협 모델이 다르며 단순히 “SHA-256이면 더 안전”으로 끝내면 성능·seed·equality 계약을 놓친다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">14. 실무 best practice와 anti-pattern</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fed7aa"><th align="left" style="padding:8px;border:1px solid #fdba74">Best practice</th><th align="left" style="padding:8px;border:1px solid #fdba74">Anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">Map ADT·missing·replacement·null 계약을 먼저 정의</td><td style="padding:8px;border:1px solid #fdba74">언어 HashMap 기본값에 업무 의미를 맞춤</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">expected n과 load factor로 initial capacity 산정</td><td style="padding:8px;border:1px solid #fdba74">무조건 큰 capacity로 resize만 회피</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">equals/hash field를 같은 immutable canonical form에서 계산</td><td style="padding:8px;border:1px solid #fdba74">case-fold는 equals만, hash는 원문 사용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">α와 max/p95 chain·probe·rehash를 관측</td><td style="padding:8px;border:1px solid #fdba74">평균 lookup latency 하나로 건강 판단</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">외부 key에 keyed randomization·quota·timeout 적용</td><td style="padding:8px;border:1px solid #fdba74"><code>k mod m</code> 같은 예측 가능한 규칙을 노출</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fdba74">range/order 요구가 생기면 구조 선택을 재검토</td><td style="padding:8px;border:1px solid #fdba74">hash table에 정렬된 iteration을 우연히 기대</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">15. 30분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>5분:</strong> <code>get/put/delete</code>, missing, replacement, key immutability 계약을 글로 쓴다.</li>
+            <li><strong>10분:</strong> 위 fixed chaining map을 구현하고 Python dict와 10,000개 random operation을 differential test한다.</li>
+            <li><strong>5분:</strong> m=8에서 sequential, multiple-of-8, random key의 bucket histogram과 max chain을 출력한다.</li>
+            <li><strong>5분:</strong> max_load 직전·직후와 강제 allocation failure를 넣어 snapshot과 size가 보존되는지 본다.</li>
+            <li><strong>5분:</strong> <code>선택한 hash family·seed 수명·α 임계값·관측 지표·재검토 조건</code>을 ADR로 남긴다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q1. HashMap lookup은 항상 O(1)인가요?</strong><br>아니다. 좋은 분포와 bounded α 아래 expected O(1)이고, 모든 key가 한 bucket/probe cluster에 몰리면 worst Θ(n)이다. hash 계산 O(|key|), equality, cache miss, resize tail도 분리하고 universal/keyed hashing과 분포 지표를 제시한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q2. load factor 0.75는 무엇을 뜻하고 왜 무조건 최선이 아닌가요?</strong><br><code>n/m</code>이며 구현의 resize 밀도 기준이다. 낮추면 보통 probe/chain은 줄지만 memory·iteration footprint가 늘고, 높이면 반대다. chaining은 α&gt;1 가능, open addressing은 α&lt;1 필수다. Java HashMap 0.75는 일반적 절충이지 모든 workload의 정답이 아니다.</div>
+          <div style="padding:16px;background:#ffedd5;border-radius:10px"><strong>Q3. equals와 hashCode 계약이 깨지면 어떤 버그가 생기나요?</strong><br>동등한 두 key가 서로 다른 bucket 후보로 가서 lookup miss·중복 mapping·delete 실패가 생긴다. 동일 canonical immutable field로 둘을 구현하고 <code>x==y ⇒ hash(x)==hash(y)</code> property, mutation-after-insert 반례, cross-version serialization 경계를 설명한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>서로 다른 key의 hash가 같으면 왜 equality를 다시 검사해야 하는가?</li>
+            <li>α=0.5인데 lookup이 Θ(n)이 되는 최소 입력은?</li>
+            <li>chaining에서 α가 1을 넘을 수 있지만 open addressing에서는 안 되는 이유는?</li>
+            <li><code>x==y ⇒ hash(x)==hash(y)</code>의 역이 필요하지 않은 이유는?</li>
+            <li>Day 3의 amortized와 오늘 expected는 어떤 확률·연산열 축이 다른가?</li>
+            <li>Day 8 locality 관점에서 node chaining이 open addressing보다 불리할 수 있는 이유는?</li>
+            <li>Day 14 operation mix에 range query가 많아지면 hash map 선택을 왜 재검토해야 하는가?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) hash는 식별자가 아닌 후보 축약값. 2) 모든 key를 같은 bucket으로 보내는 함수·입력. 3) chaining bucket은 여러 entry를 담지만 open addressing은 빈 slot이 있어야 삽입 가능. 4) collision은 허용된다. 5) expected는 hash/입력 randomness, amortized는 긴 연산열 비용 합. 6) pointer chasing·allocation·cache miss. 7) hash map은 정렬 순서와 범위 탐색을 제공하지 않는다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">18. 다음 날 연결</h2>
+          <p>Day 16은 <strong>chaining과 open addressing</strong>을 같은 Map ADT 아래 비교한다. bucket vector/node chain과 flat slot array의 RI, locality, deletion, α 민감도, iterator lifetime, 실제 workload별 선택을 구현과 benchmark로 연결한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#9a3412">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/ce9e94705b914598ce78a00a70a1f734_MIT6_006S20_lec4.pdf" style="color:#9a3412">MIT 6.006 Lecture 4 — Hashing</a>: direct access에서 hashing으로의 전환, pigeonhole collision, universal family, expected chain과 dynamic rebuild.</li>
+            <li><a href="https://www.ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/d3e4d64266d481c74c9e7c15e09999fe_MIT6_006F11_lec08.pdf" style="color:#9a3412">MIT 6.006 Lecture 8 — Hashing I</a>: α=n/m, simple uniform hashing 아래 chaining search Θ(1+α), division/multiplication method.</li>
+            <li><a href="https://xlinux.nist.gov/dads/HTML/loadfactor.html" style="color:#9a3412">NIST Dictionary of Algorithms and Data Structures — load factor</a>: load factor 정의와 chaining/open-addressing 차이.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html" style="color:#9a3412">Java SE 26 HashMap API</a>: capacity·load factor·iteration 비용·initial sizing과 일반적인 0.75 절충.</li>
+            <li><a href="https://docs.python.org/3/reference/datamodel.html#object.__hash__" style="color:#9a3412">Python 3 Data Model — object.__hash__</a>: equality/hash 계약, mutable key 금지, str·bytes hash randomization.</li>
+            <li><a href="https://peps.python.org/pep-0456/" style="color:#9a3412">PEP 456 — Secure and interchangeable hash algorithm</a>: hash collision DoS 위협과 keyed SipHash 설계 배경.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-15 Asia/Seoul · 공식 문서와 대학 자료를 확인했으며 benchmark 수치는 명시된 환경에만 해당한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
