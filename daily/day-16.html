@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 16 · chaining과 open addressing</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#1e3a8a;color:#eff6ff">
+          <div style="color:#fcd34d;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 3 / DAY 16</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">충돌을 밖으로 이을까,<br>table 안에서 탐색할까</h1>
+          <p style="margin:0;color:#bfdbfe">Same Map ADT → two representations → RI → probe/chain cost → production choice · 110분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #2563eb;background:#dbeafe;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            chaining은 bucket 밖의 entry container로 충돌을 흡수하고, open addressing은 table 안의 probe sequence로 빈 slot을 찾는다. 같은 expected O(1)이라도 α 민감도·allocation·locality·삭제·reference 안정성은 전혀 다르다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Collision resolution</strong></td><td style="padding:9px;border:1px solid #93c5fd">서로 다른 key가 같은 첫 bucket을 가질 때도 mapping을 잃지 않고 저장·탐색하는 규칙.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Separate chaining</strong></td><td style="padding:9px;border:1px solid #93c5fd">bucket마다 entry들의 별도 chain/container를 두는 방식. 한 bucket에 여러 key가 들어갈 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Open addressing</strong></td><td style="padding:9px;border:1px solid #93c5fd">모든 entry를 slot array 안에 두고 충돌 시 정해진 후보 위치들을 차례로 검사하는 방식.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Probe</strong></td><td style="padding:9px;border:1px solid #93c5fd">open addressing에서 slot 하나를 읽고 상태·key를 검사하는 1회 동작.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Probe sequence</strong></td><td style="padding:9px;border:1px solid #93c5fd">key마다 검사할 slot 순서 <code>p(k,0),p(k,1),…</code>. table의 모든 slot을 중복 없이 방문할 수 있어야 한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Linear probing</strong></td><td style="padding:9px;border:1px solid #93c5fd"><code>p(k,j)=(h(k)+j) mod m</code>으로 연속 slot을 보는 가장 단순한 open addressing.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Slot state</strong></td><td style="padding:9px;border:1px solid #93c5fd"><code>EMPTY/OCCUPIED/DELETED</code> 같은 상태. EMPTY와 삭제 흔적은 lookup 종료 의미가 다르다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Tombstone</strong></td><td style="padding:9px;border:1px solid #93c5fd">삭제된 slot임을 나타내되 probe chain은 끊지 않는 표식. Day 17에서 깊게 다룬다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Cluster</strong></td><td style="padding:9px;border:1px solid #93c5fd">연속해서 차 있는 slot 덩어리. linear probing에서는 새 collision이 덩어리를 키워 probe가 길어질 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Load factor α</strong></td><td style="padding:9px;border:1px solid #93c5fd"><code>n/m</code>. chaining은 1 초과 가능하지만 open addressing은 빈 slot이 필요하므로 1 미만이어야 한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Pointer stability</strong></td><td style="padding:9px;border:1px solid #93c5fd">삽입·rehash 뒤에도 보관한 원소 주소가 유효한 성질. flat table은 이동 때문에 보통 약하다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #93c5fd"><strong>Failure atomicity</strong></td><td style="padding:9px;border:1px solid #93c5fd">allocation·capacity 오류가 나도 추상 Map이 호출 전 상태로 보존되는 성질.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">2. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>① Map contract</strong></td><td style="padding:13px;background:#eff6ff">unique key·replacement·missing·iterator·memory limit</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ hash/equality는 동일, collision representation만 교체</td></tr>
+            <tr><td style="padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>② Workload</strong></td><td style="padding:13px;background:#eff6ff">hit/miss·insert/delete·α·value size·address lifetime</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ 두 RI와 failure path가 모두 계약을 만족하는지 확인</td></tr>
+            <tr><td style="padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>③ Representation</strong></td><td style="padding:13px;background:#eff6ff">bucket→node/vector chain 또는 control+flat slot array</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ chain/probe histogram·bytes/entry·p99·rehash 측정</td></tr>
+            <tr><td style="padding:13px;background:#172554;color:white;border-radius:9px"><strong>④ Production choice</strong></td><td style="padding:13px;background:#eff6ff">locality 우선 flat / address·큰 value 우선 node / 재검토 조건</td></tr>
+          </table>
+          <p><strong>Lookup 흐름 비교:</strong> chaining은 <code>hash → bucket pointer → chain equality scan</code>, open addressing은 <code>hash → p(k,0) → p(k,1) → … → key 또는 EMPTY</code>다. “O(1)” 뒤의 실제 memory access graph가 다르다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> 64-bit session ID를 session state에 연결하는 in-memory map을 고른다. 최대 20만 entry, 90% lookup, 7% insert/update, 3% delete이며 lookup 중 70%는 hit다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#bfdbfe"><th align="left" style="padding:8px;border:1px solid #93c5fd">제약</th><th align="left" style="padding:8px;border:1px solid #93c5fd">선택에 미치는 영향</th></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">value 24 bytes, key 8 bytes</td><td style="padding:8px;border:1px solid #93c5fd">flat slot 이동 비용이 아직 감당 가능하고 locality 이득 후보</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">p99 1ms, 128MiB budget</td><td style="padding:8px;border:1px solid #93c5fd">평균만 아니라 긴 chain/probe·rehash pause·bytes/entry 측정</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">외부가 entry 주소를 보관하지 않음</td><td style="padding:8px;border:1px solid #93c5fd">flat table의 pointer invalidation을 API로 허용 가능</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">delete 지속 발생</td><td style="padding:8px;border:1px solid #93c5fd">chaining unlink는 단순, open addressing은 tombstone/shift/rehash 정책 필요</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">single-writer shard</td><td style="padding:8px;border:1px solid #93c5fd">단일 thread RI부터 증명; reader publication은 별도 계약</td></tr>
+          </table>
+          <div style="margin-top:14px;padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>후보:</strong> 일반적으로 작은 value·lookup 중심·주소 비노출이면 flat open addressing을 먼저 측정한다. 큰 non-movable value, 강한 pointer stability, 높은 α 허용이 핵심이면 node/chaining 또는 flat slot에 <code>unique_ptr&lt;Value&gt;</code>를 두는 합성안을 검토한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">4. 같은 Map ADT, 다른 abstraction function</h2>
+          <p><strong>공통 ADT:</strong> 유한 부분함수 <code>M: K ⇀ V</code>. get은 FOUND/NOT_FOUND, put은 INSERTED/REPLACED/FULL·OOM, delete는 REMOVED/NOT_FOUND를 구분한다. 같은 key는 최대 하나이며 iteration order는 계약하지 않는다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#bfdbfe"><th align="left" style="padding:8px;border:1px solid #93c5fd">표현</th><th align="left" style="padding:8px;border:1px solid #93c5fd">Abstraction function</th></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd"><strong>Chaining</strong></td><td style="padding:8px;border:1px solid #93c5fd">모든 bucket container의 entry를 합쳐 key→value mapping으로 해석</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd"><strong>Open addressing</strong></td><td style="padding:8px;border:1px solid #93c5fd">slot state가 OCCUPIED인 entry만 모아 mapping으로 해석; EMPTY/DELETED는 값이 아님</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">5. Representation invariant</h2>
+          <h3 style="color:#1e40af">Chaining RI</h3>
+          <ol style="padding-left:22px">
+            <li><code>m&gt;0</code>, bucket array 길이는 m, <code>size=Σ chain_length(i)</code>.</li>
+            <li>모든 entry e는 정확히 <code>bucket[h(e.key)]</code>에 한 번 존재한다.</li>
+            <li>equality 기준 중복 key가 없고, chain은 cycle 없이 종료한다.</li>
+            <li>node 소유권·allocator가 명확하며 erase된 node 주소는 다시 사용하지 않는다.</li>
+          </ol>
+          <h3 style="color:#1e40af">Open addressing RI</h3>
+          <ol style="padding-left:22px">
+            <li><code>0≤size&lt;m</code>, <code>size=#OCCUPIED</code>; 삽입 가능한 table에는 최소 한 EMPTY가 있다.</li>
+            <li>모든 OCCUPIED key k는 자신의 probe sequence 위에 정확히 한 번 존재한다.</li>
+            <li>k의 home에서 저장 slot까지 lookup이 만나는 앞선 slot에는 EMPTY가 없다. DELETED는 통과한다.</li>
+            <li>probe sequence는 최대 m회 안에 모든 후보를 중복 없이 방문하거나 명시적으로 종료한다.</li>
+            <li>EMPTY, OCCUPIED, DELETED control state와 payload lifetime이 일치한다.</li>
+          </ol>
+          <p><strong>공통 RI:</strong> equality와 hash에 쓰는 key field는 저장 중 불변이고 <code>x==y ⇒ hash(x)==hash(y)</code>다. 표현만 바꿔도 이 계약은 바뀌지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">6. Lookup 정당성 증명</h2>
+          <p><strong>Chaining:</strong> k가 존재하면 RI에 의해 <code>B[h(k)]</code> 안에 있다. lookup이 그 chain의 모든 entry를 equality로 검사하므로 유일한 mapping을 찾는다. chain 끝까지 없으면 다른 bucket에 있을 수 없으므로 NOT_FOUND가 맞다.</p>
+          <p><strong>Open addressing:</strong> k가 slot <code>p(k,j)</code>에 저장됐다고 하자. 삽입 당시 앞선 <code>p(k,0..j-1)</code>은 OCCUPIED 또는 재사용 가능한 DELETED였고 EMPTY였다면 거기에 저장됐을 것이다. 삭제가 그 prefix를 EMPTY로 바꾸지 않는다는 RI 아래 lookup은 같은 순서를 따라 k에 도달한다. 먼저 EMPTY를 만나면 그 뒤에 k가 저장됐을 수 없으므로 NOT_FOUND다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>최소 반례:</strong> m=8, linear probing에서 h(A)=h(B)=1이라 A는 slot 1, B는 slot 2에 있다. A를 EMPTY로 지우면 B lookup은 slot 1에서 멈춰 거짓 NOT_FOUND를 낸다. A 자리를 DELETED로 두거나 cluster를 올바르게 재배치해야 한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">7. Complexity: 같은 expected O(1)의 다른 조건</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr style="background:#bfdbfe"><th align="left" style="padding:7px;border:1px solid #93c5fd">축</th><th style="padding:7px;border:1px solid #93c5fd">Chaining</th><th style="padding:7px;border:1px solid #93c5fd">Open addressing</th></tr>
+            <tr><td style="padding:7px;border:1px solid #93c5fd">expected lookup</td><td style="padding:7px;border:1px solid #93c5fd">Θ(1+α), 좋은 분포</td><td style="padding:7px;border:1px solid #93c5fd">O(1/(1-α)) 상한*, uniform probe</td></tr>
+            <tr><td style="padding:7px;border:1px solid #93c5fd">worst lookup</td><td style="padding:7px;border:1px solid #93c5fd">Θ(n), 한 chain</td><td style="padding:7px;border:1px solid #93c5fd">Θ(m), 긴 cluster/full scan</td></tr>
+            <tr><td style="padding:7px;border:1px solid #93c5fd">load factor</td><td style="padding:7px;border:1px solid #93c5fd">α&gt;1 표현 가능</td><td style="padding:7px;border:1px solid #93c5fd">α&lt;1 필수, 임계값 전에 resize</td></tr>
+            <tr><td style="padding:7px;border:1px solid #93c5fd">insert</td><td style="padding:7px;border:1px solid #93c5fd">expected O(1)+node allocation</td><td style="padding:7px;border:1px solid #93c5fd">expected O(1), 빈/reusable slot 필요</td></tr>
+            <tr><td style="padding:7px;border:1px solid #93c5fd">delete</td><td style="padding:7px;border:1px solid #93c5fd">찾은 뒤 unlink</td><td style="padding:7px;border:1px solid #93c5fd">tombstone/backshift/rehash 정책</td></tr>
+            <tr><td style="padding:7px;border:1px solid #93c5fd">space</td><td style="padding:7px;border:1px solid #93c5fd">Θ(m+n), links·allocator</td><td style="padding:7px;border:1px solid #93c5fd">Θ(m), empty slack·control bytes</td></tr>
+          </table>
+          <p style="font-size:13px;color:#64748b">* MIT의 uniform hashing 분석에서 unsuccessful search/insert의 기대 probe 상한. linear probing은 독립 uniform permutation 가정을 만족하지 않고 primary clustering으로 더 나빠질 수 있다. α→1이면 분모가 0에 가까워진다.</p>
+          <p><strong>Amortized 축:</strong> 양쪽 모두 resize/rehash가 한 번에 Θ(n)일 수 있고 geometric growth라면 긴 연산열에 상각할 수 있다. expected는 hash/probe 분포에 대한 평균, amortized는 연산열 합에 대한 보장이다. p99 한 번을 보장하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">8. 직접 구현: 두 lookup의 핵심</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#172554;color:#eff6ff;padding:16px;border-radius:10px;font-size:13px"><code>typedef struct Node {
+  uint64_t key, value;
+  struct Node *next;
+} Node;
+
+bool chain_get(const Map *t, uint64_t k, uint64_t *out) {
+  for (Node *p = t-&gt;buckets[index(k)]; p; p = p-&gt;next) {
+    if (p-&gt;key == k) { *out = p-&gt;value; return true; }
+  }
+  return false;
+}
+
+typedef enum { EMPTY, OCCUPIED, DELETED } State;
+typedef struct { uint64_t key, value; State state; } Slot;
+
+bool flat_get(const Flat *t, uint64_t k, uint64_t *out) {
+  size_t i = index(k);
+  for (size_t probes = 0; probes &lt; t-&gt;m; ++probes) {
+    const Slot *s = &amp;t-&gt;slots[i];
+    if (s-&gt;state == EMPTY) return false;       // proof의 종결점
+    if (s-&gt;state == OCCUPIED &amp;&amp; s-&gt;key == k) {
+      *out = s-&gt;value; return true;
+    }
+    i = (i + 1) &amp; (t-&gt;m - 1);                 // m은 2의 거듭제곱
+  }
+  return false;                                // corrupt/full에도 유한 종료
+}</code></pre>
+          <p><strong>놓치기 쉬운 조건:</strong> mask wrap은 m이 2의 거듭제곱일 때만 modulo와 같다. 임의 m에는 <code>%m</code> 또는 다른 검증된 reduction을 쓴다. key 0을 EMPTY sentinel로 겸용하면 0을 저장할 수 없으므로 별도 state/control byte가 안전하다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">9. Insert·delete·allocation의 transaction 경계</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#bfdbfe"><th align="left" style="padding:8px;border:1px solid #93c5fd">경로</th><th align="left" style="padding:8px;border:1px solid #93c5fd">Prepare</th><th align="left" style="padding:8px;border:1px solid #93c5fd">Commit</th></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">chain put new</td><td style="padding:8px;border:1px solid #93c5fd">중복 확인, node/value 구성</td><td style="padding:8px;border:1px solid #93c5fd">bucket head 연결 후 size++</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">flat put new</td><td style="padding:8px;border:1px solid #93c5fd">전체 probe, first deleted 기억, capacity 확인</td><td style="padding:8px;border:1px solid #93c5fd">payload 완성 후 state=OCCUPIED, size++</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">chain delete</td><td style="padding:8px;border:1px solid #93c5fd">owner link와 target 찾기</td><td style="padding:8px;border:1px solid #93c5fd">unlink, size--, value/node destroy</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">flat delete</td><td style="padding:8px;border:1px solid #93c5fd">target 찾기</td><td style="padding:8px;border:1px solid #93c5fd">payload destroy 후 DELETED, size--; tombstone count++</td></tr>
+          </table>
+          <p>state를 OCCUPIED로 먼저 공개하고 payload construction이 실패하면 reader가 미완성 값을 볼 수 있다. concurrent map이라면 memory ordering과 publication linearization을 별도 설계한다. 이 단일-thread 구현을 lock-free라고 확대 해석하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">10. 테스트: reference model + RI + failure injection</h2>
+          <ol style="padding-left:22px">
+            <li>두 구현에 같은 random put/get/delete trace를 넣고 reference <code>dict</code>와 mapping·size를 매 단계 비교한다.</li>
+            <li>m=1/2/8, key 0·최댓값, duplicate replacement, missing, wrap-around cluster를 포함한다.</li>
+            <li>각 prefix 뒤 chain의 bucket 소속·cycle·count, flat의 state count·probe reachability·key uniqueness를 검사한다.</li>
+            <li>home이 같은 A/B에서 A 삭제 후 B를 찾는 최소 반례로 EMPTY/DELETED 혼동을 잡는다.</li>
+            <li>allocation N번째 실패, value constructor 예외, capacity 산술 overflow를 주입하고 추상 map snapshot이 유지되는지 확인한다.</li>
+            <li>ASan/UBSan, leak check, randomized differential test를 통과한 binary와 benchmark binary를 분리한다.</li>
+          </ol>
+          <p><strong>이번 검증:</strong> C11 두 구현을 Apple clang 21.0.0의 <code>-Wall -Wextra -Werror</code>와 ASan/UBSan으로 실행했다. 131,072·209,715개 entry의 hit/miss 및 destroy가 오류·누수 보고 없이 통과했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">11. Benchmark 결과: α가 open addressing을 압박한다</h2>
+          <p><strong>환경:</strong> Apple clang 21.0.0 <code>-O3</code>, arm64 macOS 26.5.2, m=262,144, 같은 64-bit mixer·key 순서, random-order 전체 hit lookup, 각 5회 median. chaining은 node-per-entry, flat은 24-byte slot의 단순 linear probing이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr style="background:#bfdbfe"><th style="padding:7px;border:1px solid #93c5fd">α</th><th style="padding:7px;border:1px solid #93c5fd">chain hit steps</th><th style="padding:7px;border:1px solid #93c5fd">flat hit probes</th><th style="padding:7px;border:1px solid #93c5fd">chain/flat miss</th><th style="padding:7px;border:1px solid #93c5fd">chain/flat hit ms</th></tr>
+            <tr><td align="center" style="padding:7px;border:1px solid #93c5fd">0.5</td><td align="center" style="padding:7px;border:1px solid #93c5fd">1.249</td><td align="center" style="padding:7px;border:1px solid #93c5fd">1.498</td><td align="center" style="padding:7px;border:1px solid #93c5fd">0.501 / 2.507</td><td align="center" style="padding:7px;border:1px solid #93c5fd">1.228 / 1.343</td></tr>
+            <tr><td align="center" style="padding:7px;border:1px solid #93c5fd">0.8</td><td align="center" style="padding:7px;border:1px solid #93c5fd">1.399</td><td align="center" style="padding:7px;border:1px solid #93c5fd">3.005</td><td align="center" style="padding:7px;border:1px solid #93c5fd">0.802 / 12.965</td><td align="center" style="padding:7px;border:1px solid #93c5fd">2.351 / 3.493</td></tr>
+          </table>
+          <p><strong>해석:</strong> α=0.8에서 linear probing miss가 cluster 끝까지 걷느라 급증했다. flat이 패배한 것은 “open addressing은 느리다”는 결론이 아니라 이 24-byte AoS slot·linear probe 구현의 결과다. Swiss table류는 작은 control byte group과 SIMD lookup으로 memory traffic을 줄인다.</p>
+          <p><strong>메모리 근사:</strong> 이번 C ABI에서 node와 slot은 각각 24 bytes다. allocator metadata를 빼도 chain은 <code>m×8+n×24</code>, flat은 <code>m×24</code>. α=0.5에서는 약 5.0MiB/6.0MiB, α=0.8에서는 약 6.8MiB/6.0MiB다. 실제 allocator·alignment·control layout을 포함해 resident bytes를 측정해야 한다.</p>
+          <p><strong>benchmark 주의:</strong> build·RNG·allocation을 timed region에서 빼고 hit/miss를 따로 잰다. α, key/value 크기, delete churn, tombstone 수, chain/probe p95·max, iteration, allocator, rehash, hardware counter를 기록한다. 평균 probe와 wall time의 상관을 확인하고 한 구현의 최적화 수준 차이를 알고리즘 차이로 오인하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">12. Memory·locality·reference lifetime</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Node chaining:</strong> bucket pointer 뒤 node를 따라가므로 dependent cache miss와 allocator overhead가 생긴다. 대신 value 주소를 안정적으로 유지하기 쉽고 큰 value를 rehash 때 복사하지 않는다.</li>
+            <li><strong>Bucket vector chaining:</strong> bucket별 작은 contiguous storage는 node보다 locality가 좋지만 vector growth와 erase 이동, bucket별 slack이 생긴다. chaining=linked list로 고정하지 않는다.</li>
+            <li><strong>Flat open addressing:</strong> control·key·value가 가까우면 prefetch/SIMD에 유리하고 allocation 수가 적다. 큰 value는 probe마다 불필요한 cache line을 읽을 수 있다.</li>
+            <li><strong>SoA control:</strong> state/fingerprint를 작은 control byte array로 분리하면 여러 후보를 먼저 필터링하고 실제 key/value load를 줄일 수 있다.</li>
+            <li><strong>Rehash:</strong> flat table은 원소가 이동해 pointer/iterator가 무효화될 수 있다. C++ 표준 unordered container는 rehash가 iterator를 무효화하지만 element pointer/reference는 유지하는 node 계열 계약을 갖는다. container마다 문서를 확인한다.</li>
+            <li><strong>합성:</strong> flat index + heap-owned value는 lookup locality와 value 주소 안정성을 절충하지만 pointer indirection·allocation을 다시 추가한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">13. Error handling과 운영 경계</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#bfdbfe"><th align="left" style="padding:8px;border:1px solid #93c5fd">오류/징후</th><th align="left" style="padding:8px;border:1px solid #93c5fd">정책</th><th align="left" style="padding:8px;border:1px solid #93c5fd">금지할 동작</th></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">table full/threshold</td><td style="padding:8px;border:1px solid #93c5fd">resize 준비, bounded면 FULL 명시</td><td style="padding:8px;border:1px solid #93c5fd">무한 probe 또는 기존 key 덮어쓰기</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">allocation failure</td><td style="padding:8px;border:1px solid #93c5fd">새 node/table 완성 후 commit</td><td style="padding:8px;border:1px solid #93c5fd">size/control을 먼저 변경</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">probe &gt; m</td><td style="padding:8px;border:1px solid #93c5fd">CORRUPT/FULL로 종료·metric·fail safe</td><td style="padding:8px;border:1px solid #93c5fd">wrap하며 영원히 반복</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">tombstone 증가</td><td style="padding:8px;border:1px solid #93c5fd">별도 count·compaction/rehash trigger</td><td style="padding:8px;border:1px solid #93c5fd">size/α만 보고 건강하다고 판단</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">stale pointer</td><td style="padding:8px;border:1px solid #93c5fd">handle/generation 또는 주소 비노출</td><td style="padding:8px;border:1px solid #93c5fd">rehash 뒤 캐시한 element pointer 사용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">concurrent mutation</td><td style="padding:8px;border:1px solid #93c5fd">lock/shard/copy-publish 계약</td><td style="padding:8px;border:1px solid #93c5fd">원자적 state byte만으로 map 전체 안전 주장</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">14. 실무 best practice와 anti-pattern</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#bfdbfe"><th align="left" style="padding:8px;border:1px solid #93c5fd">Best practice</th><th align="left" style="padding:8px;border:1px solid #93c5fd">Anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">같은 Map contract·hash·key set으로 후보 비교</td><td style="padding:8px;border:1px solid #93c5fd">서로 다른 구현 최적화를 자료구조 효과로 주장</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">hit/miss/delete churn·α 분포를 production에서 계수</td><td style="padding:8px;border:1px solid #93c5fd">평균 α와 평균 latency만 관측</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">probe/chain p95·max와 tombstone을 경보화</td><td style="padding:8px;border:1px solid #93c5fd">QPS가 유지되면 collision 문제 무시</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">pointer/iterator invalidation을 API에 명시</td><td style="padding:8px;border:1px solid #93c5fd">container 교체 후 우연한 주소 안정성 의존</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">expected n으로 reserve하되 memory·iteration도 측정</td><td style="padding:8px;border:1px solid #93c5fd">최대치로 과대 reserve해 모든 resize 회피</td></tr>
+            <tr><td style="padding:8px;border:1px solid #93c5fd">검증된 library container와 hash를 우선</td><td style="padding:8px;border:1px solid #93c5fd">보안 seed·삭제·exception을 빠뜨린 자체 구현 배포</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">15. 35분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>10분:</strong> chaining과 linear probing get/put을 같은 API로 구현하고 각 RI validator를 만든다.</li>
+            <li><strong>10분:</strong> m=8의 모든 짧은 put/get/delete sequence를 reference dict와 비교한다. 삭제는 tombstone을 사용한다.</li>
+            <li><strong>5분:</strong> α=0.2/0.5/0.8에서 hit/miss 평균·p95 probe/chain을 기록한다.</li>
+            <li><strong>5분:</strong> node/slot/bucket/control/allocator를 포함한 bytes/entry를 계산한다.</li>
+            <li><strong>5분:</strong> 선택·pointer contract·threshold·failure policy·재검토 metric을 ADR 5줄로 쓴다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q1. chaining과 open addressing 중 무엇을 고르겠습니까?</strong><br>Map 계약 → hit/miss/delete·α → key/value bytes → locality/allocation → pointer stability → resize tail·OOM → 보안 분포 → benchmark 순으로 답한다. 작은 value·lookup 중심이면 flat을 먼저 측정하고, 강한 주소 안정성·큰 value면 node/indirection을 검토한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q2. open addressing 삭제에서 EMPTY로 바꾸면 왜 틀리나요?</strong><br>같은 home의 뒤 key까지 이어지는 probe prefix를 끊어 거짓 NOT_FOUND를 만든다. DELETED는 lookup을 통과시키고 insert가 재사용하며, backshift는 probe 불변식을 보존해 재배치해야 한다. tombstone 누적 지표와 rehash 정책까지 말한다.</div>
+          <div style="padding:16px;background:#dbeafe;border-radius:10px"><strong>Q3. open addressing이 cache-friendly라는데 benchmark에서 느린 이유는?</strong><br>“flat”은 충분조건이 아니다. α=0.8, linear clustering, 24-byte AoS slot, random hit/miss가 probe traffic을 키웠다. control-byte SoA·SIMD·better probing 같은 구현 차이와 동일 hash/key/contract의 공정 비교, p95 probe·hardware counter를 제시한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>chaining에서 α&gt;1이 가능하지만 open addressing에서 불가능한 이유는?</li>
+            <li>open addressing lookup이 EMPTY에서 멈춰도 되는 RI는?</li>
+            <li>α→1일 때 <code>1/(1-α)</code>가 알려 주는 운영 위험은?</li>
+            <li>node chaining의 expected step이 적어도 flat보다 느릴 수 있는 이유는?</li>
+            <li>Day 9 dynamic array resize와 hash table rehash의 공통 amortized 함정은?</li>
+            <li>Day 10 linked list의 pointer stability가 오늘 chaining 선택과 어떻게 연결되는가?</li>
+            <li>Day 15의 좋은 hash가 있어도 linear probing이 cluster를 만들 수 있는 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) chain은 bucket당 여러 entry, flat은 최소 한 빈 slot 필요. 2) 저장 slot까지 probe prefix에 EMPTY가 없고 삭제도 EMPTY로 만들지 않음. 3) miss/insert probe와 tail 폭증. 4) pointer chasing·allocation·cache miss. 5) 한 번의 Θ(n) 재배치가 p99에 나타남. 6) node는 주소 안정성을 주지만 locality 비용. 7) 충돌한 key가 기존 연속 cluster 어느 곳에 합류해 덩어리를 키움.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">18. 다음 날 연결</h2>
+          <p>Day 17은 <strong>probing, tombstone, clustering</strong>이다. linear/quadratic/double hashing의 coverage 조건, primary·secondary clustering, tombstone이 lookup 정당성을 지키면서 성능 debt가 되는 과정, backshift·rehash 정책을 최소 반례와 실험으로 다룬다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/a7f609148928e4a10653d3f3be03a2b5_MIT6_006F11_lec10.pdf" style="color:#1d4ed8">MIT 6.006 Lecture 10 — Open Addressing</a>: uniform probing 아래 expected probe <code>1/(1-α)</code>, chaining과 open addressing 비교.</li>
+            <li><a href="https://www.ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/d3e4d64266d481c74c9e7c15e09999fe_MIT6_006F11_lec08.pdf" style="color:#1d4ed8">MIT 6.006 Lecture 8 — Hashing I</a>: chaining, α와 expected Θ(1+α), hash function 전제.</li>
+            <li><a href="https://www.eel.is/c%2B%2Bdraft/unord.req.general" style="color:#1d4ed8">C++ Working Draft — Unordered associative containers</a>: average/worst complexity, Hash·Pred 계약, rehash의 iterator 및 pointer/reference 규칙.</li>
+            <li><a href="https://abseil.io/docs/cpp/guides/container" style="color:#1d4ed8">Abseil C++ Guide — Containers</a>: Swiss flat/node table의 저장 layout, 87.5% max load, memory, pointer 안정성 선택.</li>
+            <li><a href="https://abseil.io/docs/cpp/guides/hash" style="color:#1d4ed8">Abseil C++ Guide — absl::Hash</a>: hash algorithm 변경 가능성, heterogeneous lookup, hash-flooding 방어 경계.</li>
+            <li><a href="https://doc.rust-lang.org/stable/std/collections/hash_map/index.html" style="color:#1d4ed8">Rust Standard Library — HashMap</a>: quadratic probing·SIMD lookup 기반 구현과 공개 API 계약.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-16 Asia/Seoul · 공식 문서와 대학 자료를 확인했으며 benchmark 수치는 명시된 구현·환경에만 해당한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
