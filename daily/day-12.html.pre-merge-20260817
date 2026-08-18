@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 12 · queue, deque, circular buffer</title>
+</head>
+<body style="margin:0;background:#0f172a;color:#26323b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0f172a">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#f8fafc;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#134e4a;color:#f0fdfa">
+          <div style="color:#5eead4;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 2 / DAY 12</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">queue, deque,<br>circular buffer</h1>
+          <p style="margin:0;color:#99f6e4">FIFO contract · representation invariant · wrap-around · locality · overflow policy · 110분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #0f766e;background:#ccfbf1;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            Queue는 오래 기다린 값을 먼저 꺼내는 FIFO 계약, deque는 양 끝 연산 계약, circular buffer는 유한 배열을 논리적으로 이어 그 계약을 구현하는 표현이다. 실무의 핵심은 O(1)보다도 full/empty 인코딩, overflow 정책, 실패 원자성, 소유권과 동시성 계약을 명시하는 것이다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Queue</strong></td><td style="padding:9px;border:1px solid #5eead4">뒤(rear)에 넣고 앞(front)에서 빼는 추상 자료형.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>FIFO</strong></td><td style="padding:9px;border:1px solid #5eead4">First In, First Out. 아직 남아 있는 값 중 가장 먼저 들어온 값이 먼저 나온다는 순서 계약.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Enqueue / dequeue</strong></td><td style="padding:9px;border:1px solid #5eead4">queue 뒤에 추가 / queue 앞의 값을 제거해 반환.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Deque</strong></td><td style="padding:9px;border:1px solid #5eead4">Double-ended queue, “덱”. 앞과 뒤 모두에서 추가·제거할 수 있는 ADT.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Circular buffer</strong></td><td style="padding:9px;border:1px solid #5eead4">고정 배열의 마지막 다음을 첫 칸으로 취급하는 ring buffer 표현. 물리 메모리가 원형인 것은 아니다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Head / tail</strong></td><td style="padding:9px;border:1px solid #5eead4">문서마다 뜻이 다르다. 이 자료에서 head는 첫 live element, tail은 다음 push_back 위치다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Capacity / size</strong></td><td style="padding:9px;border:1px solid #5eead4">저장 가능한 최대 개수 / 현재 live element 개수.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Wrap-around</strong></td><td style="padding:9px;border:1px solid #5eead4">index가 배열 끝을 넘을 때 0으로 돌아가는 것.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>ADT</strong></td><td style="padding:9px;border:1px solid #5eead4">값과 허용 연산의 외부 계약. 배열·연결 리스트·ring은 그 계약을 실현하는 data structure다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Abstraction function</strong></td><td style="padding:9px;border:1px solid #5eead4">구체 상태를 client가 보는 추상 값으로 해석하는 규칙. 줄여서 AF.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Representation invariant</strong></td><td style="padding:9px;border:1px solid #5eead4">모든 public 연산 전후에 반드시 참이어야 하는 내부 상태 조건. 줄여서 RI.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Amortized</strong></td><td style="padding:9px;border:1px solid #5eead4">드문 비싼 연산을 긴 연산열 전체에 나눈 상각 비용. 확률적 average와 다르다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Backpressure</strong></td><td style="padding:9px;border:1px solid #5eead4">consumer가 느릴 때 producer의 생성 속도를 제한하거나 실패를 전달하는 제어.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>SPSC / MPMC</strong></td><td style="padding:9px;border:1px solid #5eead4">Single Producer Single Consumer / Multi Producer Multi Consumer. 동시성 난도가 크게 다르다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>Memory ordering</strong></td><td style="padding:9px;border:1px solid #5eead4">여러 core가 data와 index의 읽기·쓰기를 관찰하는 순서 규칙. volatile만으로 보장되지 않는다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><strong>False sharing</strong></td><td style="padding:9px;border:1px solid #5eead4">서로 다른 변수라도 같은 cache line에 있어 core들이 cache line 소유권을 계속 주고받는 현상.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">2. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>순서 계약</strong></td><td style="padding:13px;background:#ccfbf1">오래된 순서 → queue · 양 끝 → deque · 우선순위 → heap</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ peak length, burst, latency, element size를 측정</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>용량</strong></td><td style="padding:13px;background:#ccfbf1">bounded ring: 예측 가능 · growable ring: 상각 O(1) · linked: per-node allocation</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ full/empty 상태와 overflow 동작을 API에 노출</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>동시성</strong></td><td style="padding:13px;background:#ccfbf1">single thread · lock · SPSC atomics · 검증된 MPMC library</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ ownership, shutdown, timeout, cancellation, metrics를 함께 설계</td></tr>
+            <tr><td style="padding:13px;background:#115e59;color:white;border-radius:9px"><strong>운영 정책</strong></td><td style="padding:13px;background:#ccfbf1">reject · drop-new · drop-old · block · spill 중 하나를 명시하고 관측</td></tr>
+          </table>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #d6a94c;border-radius:10px"><strong>면접의 좋은 시작:</strong> “Queue가 필요합니다”에서 멈추지 말고 ordering, boundedness, overflow semantics, concurrency topology, ownership을 먼저 질문한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>대표 문제:</strong> telemetry producer가 만든 64-bit event ID를 capacity C의 bounded buffer에 보관하고 consumer가 FIFO로 처리한다. 운영 도구는 긴급 event를 앞에 넣거나 최신 event를 뒤에서 취소할 수 있어 deque가 필요하다.</p>
+          <ul style="padding-left:22px">
+            <li><strong>입력:</strong> caller-owned <code>int64_t[C]</code>, operation stream <code>push_front/back(x)</code>, <code>pop_front/back()</code>.</li>
+            <li><strong>출력:</strong> 성공 상태와 제거된 값. invalid/full/empty는 서로 다른 상태로 반환한다.</li>
+            <li><strong>성공 계약:</strong> abstract sequence의 양 끝만 바뀌고 중간 순서는 보존된다.</li>
+            <li><strong>실패 계약:</strong> full push, empty pop, invalid output pointer는 deque와 output을 바꾸지 않는다.</li>
+            <li><strong>제약 질문:</strong> C=0 허용? 값 0/NULL 저장 가능? 정수 overflow? 한 thread인가? full일 때 유실 허용? 종료 중 대기자는 어떻게 깨우는가?</li>
+          </ul>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td colspan="7" align="center" style="padding:8px;background:#134e4a;color:white"><strong>물리 배열 C=7 — 논리 sequence ⟨A,B,C,D⟩가 wrap된 상태</strong></td></tr>
+            <tr><td align="center" style="border:1px solid #5eead4;padding:8px">0<br><strong>C</strong></td><td align="center" style="border:1px solid #5eead4;padding:8px">1<br><strong>D</strong></td><td align="center" style="border:1px solid #5eead4;padding:8px">2<br>spare</td><td align="center" style="border:1px solid #5eead4;padding:8px">3<br>spare</td><td align="center" style="border:1px solid #5eead4;padding:8px">4<br>spare</td><td align="center" style="border:1px solid #5eead4;padding:8px">5<br><strong>A</strong></td><td align="center" style="border:1px solid #5eead4;padding:8px">6<br><strong>B</strong></td></tr>
+            <tr><td colspan="7" style="padding:8px;background:#ccfbf1"><code>head=5, size=4, tail=(5+4) mod 7=2</code>. 논리 순서는 index 5→6→0→1이다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">4. ADT contract와 algebraic law</h2>
+          <p><strong>Abstract value:</strong> front에서 back 방향의 유한 sequence <code>S=⟨x₀,…,xₙ₋₁⟩</code>. 구현 index는 client 계약이 아니다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:9px;border:1px solid #5eead4">Law</th><th align="left" style="padding:9px;border:1px solid #5eead4">추상 상태 변화</th></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>push_back(S,x)</code></td><td style="padding:9px;border:1px solid #5eead4"><code>S·⟨x⟩</code></td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>push_front(S,x)</code></td><td style="padding:9px;border:1px solid #5eead4"><code>⟨x⟩·S</code></td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>pop_front(⟨x⟩·S)</code></td><td style="padding:9px;border:1px solid #5eead4"><code>(x,S)</code></td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>pop_back(S·⟨x⟩)</code></td><td style="padding:9px;border:1px solid #5eead4"><code>(x,S)</code></td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4">Queue restriction</td><td style="padding:9px;border:1px solid #5eead4"><code>enqueue=push_back</code>, <code>dequeue=pop_front</code>이므로 FIFO.</td></tr>
+          </table>
+          <p>Precondition을 exception으로 강제할지, <code>offer/poll</code>처럼 status를 반환할지 정해야 한다. Java의 <code>Deque</code>도 실패 시 예외형과 special-value형을 구분한다. 저장 가능한 값과 empty sentinel이 겹치면 명시적 status/result type을 사용한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">5. Circular representation: AF와 RI</h2>
+          <p>Concrete state는 <code>(data, capacity, head, size)</code>. <strong>AF:</strong> 추상 sequence의 i번째 값은 <code>data[(head+i) mod capacity]</code>, <code>0≤i&lt;size</code>다. 실제 구현에서는 overflow 없는 wrap helper를 쓴다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:9px;border:1px solid #5eead4">Representation invariant</th><th align="left" style="padding:9px;border:1px solid #5eead4">이유</th></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>C=0 ⇔ data=NULL, head=size=0</code></td><td style="padding:9px;border:1px solid #5eead4">zero-capacity의 canonical 상태를 하나로 만든다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>C&gt;0 ⇒ data!=NULL ∧ head&lt;C</code></td><td style="padding:9px;border:1px solid #5eead4">head dereference와 wrap이 정의된다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>0≤size≤C</code></td><td style="padding:9px;border:1px solid #5eead4">live slots가 storage를 넘지 않는다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4"><code>size=0 ⇒ head=0</code></td><td style="padding:9px;border:1px solid #5eead4">empty 표현을 canonicalize해 테스트와 상태 비교를 단순화한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4">정확히 size개의 logical slot만 live</td><td style="padding:9px;border:1px solid #5eead4">spare slot의 오래된 bit를 값으로 읽지 않는다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #5eead4">buffer lifetime ≥ deque lifetime</td><td style="padding:9px;border:1px solid #5eead4">caller-owned storage의 dangling pointer를 막는다.</td></tr>
+          </table>
+          <div style="margin-top:12px;padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>최소 반례:</strong> <code>head==tail</code>만 저장하면 초기 empty와 C번 enqueue한 full이 같은 bit pattern이다. 해결은 (1) size 저장, (2) 한 칸 비워 usable C-1, (3) unbounded generation counter, (4) 별도 full bit 중 하나다. 선택한 규칙을 섞으면 안 된다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">6. 직접 구현: allocation 없는 bounded Deque64</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#042f2e;color:#f0fdfa;padding:16px;border-radius:10px;font-size:12px"><code>#include &lt;stdbool.h&gt;
+#include &lt;stddef.h&gt;
+#include &lt;stdint.h&gt;
+
+typedef enum { DQ_OK, DQ_INVALID, DQ_FULL, DQ_EMPTY } DqStatus;
+typedef struct {
+    int64_t *data; size_t capacity, head, size;
+} Deque64;
+
+static bool valid(const Deque64 *q) {
+    if (!q) return false;
+    if (q-&gt;capacity == 0)
+        return !q-&gt;data &amp;&amp; q-&gt;head == 0 &amp;&amp; q-&gt;size == 0;
+    return q-&gt;data &amp;&amp; q-&gt;head &lt; q-&gt;capacity &amp;&amp;
+           q-&gt;size &lt;= q-&gt;capacity &amp;&amp; (q-&gt;size || q-&gt;head == 0);
+}
+
+/* pre: cap&gt;0, start&lt;cap, delta&lt;cap. start+delta overflow도 피한다. */
+static size_t offset(size_t start, size_t delta, size_t cap) {
+    size_t room = cap - start;
+    return delta &gt;= room ? delta - room : start + delta;
+}
+static size_t next(size_t i, size_t cap) { return i + 1 == cap ? 0 : i + 1; }
+static size_t prev(size_t i, size_t cap) { return i == 0 ? cap - 1 : i - 1; }
+
+static DqStatus dq_init(Deque64 *q, int64_t *buf, size_t cap) {
+    if (!q || ((cap == 0) != (buf == NULL))) return DQ_INVALID;
+    *q = (Deque64){buf, cap, 0, 0};
+    return DQ_OK;
+}
+
+static DqStatus push_back(Deque64 *q, int64_t x) {
+    if (!valid(q)) return DQ_INVALID;
+    if (q-&gt;size == q-&gt;capacity) return DQ_FULL;
+    q-&gt;data[offset(q-&gt;head, q-&gt;size, q-&gt;capacity)] = x;
+    ++q-&gt;size;
+    return DQ_OK;
+}
+
+static DqStatus push_front(Deque64 *q, int64_t x) {
+    if (!valid(q)) return DQ_INVALID;
+    if (q-&gt;size == q-&gt;capacity) return DQ_FULL;
+    q-&gt;head = prev(q-&gt;head, q-&gt;capacity);
+    q-&gt;data[q-&gt;head] = x;
+    ++q-&gt;size;
+    return DQ_OK;
+}
+
+static DqStatus pop_front(Deque64 *q, int64_t *out) {
+    if (!valid(q) || !out) return DQ_INVALID;
+    if (q-&gt;size == 0) return DQ_EMPTY;
+    int64_t x = q-&gt;data[q-&gt;head];
+    if (q-&gt;size == 1) q-&gt;head = q-&gt;size = 0;
+    else { q-&gt;head = next(q-&gt;head, q-&gt;capacity); --q-&gt;size; }
+    *out = x;
+    return DQ_OK;
+}
+
+static DqStatus pop_back(Deque64 *q, int64_t *out) {
+    if (!valid(q) || !out) return DQ_INVALID;
+    if (q-&gt;size == 0) return DQ_EMPTY;
+    size_t i = offset(q-&gt;head, q-&gt;size - 1, q-&gt;capacity);
+    int64_t x = q-&gt;data[i];
+    if (--q-&gt;size == 0) q-&gt;head = 0;
+    *out = x;
+    return DQ_OK;
+}</code></pre>
+          <p><strong>세부 계약:</strong> output pointer도 먼저 검증해 실패 후 상태를 보존한다. zero-capacity push는 FULL, pop은 EMPTY다. 제거한 slot을 0으로 지우지 않는 것은 추상 값 밖이기 때문이다. secret 또는 owning pointer면 별도의 wipe/destructor 정책이 필요하다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">7. 정당성 증명: push_back과 pop_front</h2>
+          <p><strong>push_back pre:</strong> RI, <code>size&lt;C</code>. <code>offset(head,size,C)</code>는 live sequence 바로 다음 spare slot이다. x를 쓴 뒤 size를 1 늘리면 새 AF는 기존 <code>S</code> 뒤에 x가 붙은 <code>S·⟨x⟩</code>다. head는 그대로이고 새 size≤C이므로 RI가 보존된다.</p>
+          <p><strong>pop_front pre:</strong> RI, <code>size&gt;0</code>, valid out. AF의 첫 값은 data[head]이므로 먼저 읽은 x가 정확한 반환값이다. size&gt;1이면 head를 다음 index로 옮기고 size를 줄여 남은 AF가 <code>⟨x₁,…⟩</code>가 된다. 마지막 값이었다면 canonical empty <code>(head,size)=(0,0)</code>. 따라서 postcondition과 RI가 모두 성립한다.</p>
+          <p><strong>종료:</strong> 모든 연산은 loop 없이 유한 개 primitive operation만 수행하므로 종료한다. 따라서 precondition 아래 partial correctness뿐 아니라 total correctness다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">8. Full/empty 인코딩 trade-off</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:8px;border:1px solid #5eead4">표현</th><th align="left" style="padding:8px;border:1px solid #5eead4">장점</th><th align="left" style="padding:8px;border:1px solid #5eead4">주의</th></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">head + size</td><td style="padding:8px;border:1px solid #5eead4">C칸 모두 사용, 명료</td><td style="padding:8px;border:1px solid #5eead4">동시 producer/consumer가 size를 함께 갱신하면 경합</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">head + tail, 1칸 비움</td><td style="padding:8px;border:1px solid #5eead4">SPSC에서 각 side가 자기 index 소유 가능</td><td style="padding:8px;border:1px solid #5eead4">usable capacity C-1, 규칙 문서화</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">monotonic counters</td><td style="padding:8px;border:1px solid #5eead4">차이로 occupancy, slot은 mask/mod</td><td style="padding:8px;border:1px solid #5eead4">counter wrap과 원자 폭 증명 필요</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">full bit</td><td style="padding:8px;border:1px solid #5eead4">C칸 모두 사용</td><td style="padding:8px;border:1px solid #5eead4">추가 shared state와 transition complexity</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">9. 시간·공간·amortized complexity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:8px;border:1px solid #5eead4">표현</th><th style="padding:8px;border:1px solid #5eead4">양 끝</th><th style="padding:8px;border:1px solid #5eead4">grow</th><th style="padding:8px;border:1px solid #5eead4">공간·locality</th></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">bounded ring</td><td align="center" style="padding:8px;border:1px solid #5eead4">worst Θ(1)</td><td align="center" style="padding:8px;border:1px solid #5eead4">없음</td><td style="padding:8px;border:1px solid #5eead4">Θ(C), contiguous</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">geometric ring</td><td align="center" style="padding:8px;border:1px solid #5eead4">amortized Θ(1)</td><td align="center" style="padding:8px;border:1px solid #5eead4">한 번 Θ(n)</td><td style="padding:8px;border:1px solid #5eead4">Θ(capacity), 최대 두 span</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">doubly linked</td><td align="center" style="padding:8px;border:1px solid #5eead4">worst Θ(1)</td><td align="center" style="padding:8px;border:1px solid #5eead4">노드 할당</td><td style="padding:8px;border:1px solid #5eead4">Θ(n)+links, pointer chasing</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">array front shift</td><td align="center" style="padding:8px;border:1px solid #5eead4">front Θ(n)</td><td align="center" style="padding:8px;border:1px solid #5eead4">가능</td><td style="padding:8px;border:1px solid #5eead4">contiguous지만 매번 이동</td></tr>
+          </table>
+          <p><strong>상각 증명:</strong> growable ring을 가득 찰 때 2배로 늘리면 resize copy 비용은 <code>1+2+4+…&lt;2n</code>. n번 push의 resize 총비용이 O(n)이므로 push당 amortized Θ(1). 하지만 resize가 발생한 그 한 호출의 tail latency는 Θ(n)이며 OOM도 가능하다.</p>
+          <p><strong>두 span 복사:</strong> wrap된 live sequence는 <code>data[head:C)</code>와 <code>data[0:tail)</code> 두 구간이다. grow할 때 이 순서로 새 배열 0부터 복사한 뒤 head=0으로 만든다. Rust <code>VecDeque</code>도 ring이라 항상 한 contiguous slice가 아니며 필요하면 <code>make_contiguous</code>로 회전한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">10. Memory / locality / arithmetic</h2>
+          <ul style="padding-left:22px">
+            <li>Ring은 element가 인접해 prefetch와 cache line 활용이 좋고 per-node metadata·allocator traffic이 없다.</li>
+            <li>논리 sequence가 물리적으로 둘로 갈라질 수 있으므로 socket write, DMA, sort API에는 두 slice scatter/gather 또는 일시적 linearization이 필요하다.</li>
+            <li><code>(i+1)%C</code>는 C가 runtime 값이면 divide 계열 비용이 생길 수 있다. branch wrap은 임의 C, <code>(i+1)&amp;(C-1)</code>은 C가 2의 거듭제곱일 때만 정확하다.</li>
+            <li><code>head+size</code>를 먼저 계산한 뒤 modulo하면 <code>size_t</code> overflow 가능성이 있다. 위 helper는 <code>cap-start</code>와 제한된 delta로 이를 피한다.</li>
+            <li>SPSC에서 producer index와 consumer index가 같은 cache line이면 false sharing이 생길 수 있다. align/padding은 실제 cache topology와 benchmark로 검증한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">11. 직접 측정: ring과 linked queue</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:8px;border:1px solid #5eead4">500만 enqueue+dequeue</th><th align="right" style="padding:8px;border:1px solid #5eead4">best of 5</th></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">branch wrap, C=1000</td><td align="right" style="padding:8px;border:1px solid #5eead4">9.155 ms</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">modulo wrap, C=1000</td><td align="right" style="padding:8px;border:1px solid #5eead4">9.080 ms</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">bit mask, C=1024</td><td align="right" style="padding:8px;border:1px solid #5eead4">6.172 ms</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">linked, malloc/free per node</td><td align="right" style="padding:8px;border:1px solid #5eead4">99.745 ms</td></tr>
+          </table>
+          <p style="font-size:13px;color:#475569">Apple clang 21.0.0 -O3, arm64 macOS 26.5.2. 512개씩 채우고 비우며 합계를 volatile sink에 소비. allocator, workload, capacity가 바뀌면 수치도 바뀐다.</p>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #d6a94c;border-radius:10px"><strong>benchmark 주의:</strong> 한 결과로 “modulo가 항상 느리다”거나 “linked가 항상 10배 느리다”고 결론 내리지 않는다. warm-up, frequency scaling, allocation strategy, occupancy, element 크기, percentile latency, compiler assembly, cache miss와 branch miss를 함께 본다. mask는 더 빠른 대신 capacity 제한과 메모리 낭비라는 비용이 있다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">12. 테스트 전략: 예제보다 state machine</h2>
+          <ol style="padding-left:22px">
+            <li><strong>경계:</strong> C=0/1, empty pop, full push, 마지막 원소 제거, head가 C-1에서 wrap.</li>
+            <li><strong>failure atomicity:</strong> 실패 전후 concrete state와 output canary가 byte-for-byte 동일한지 확인.</li>
+            <li><strong>model-based:</strong> 단순 vector를 oracle로 두고 4개 연산 결과와 논리 sequence를 매 step 비교.</li>
+            <li><strong>RI assertion:</strong> public 연산 진입·종료마다 valid를 검사하는 debug build.</li>
+            <li><strong>property:</strong> 성공한 <code>push_back(x); pop_back()</code>은 x와 원래 abstract state를 복원.</li>
+            <li><strong>tooling:</strong> ASan/UBSan/Valgrind, race가 있으면 TSan, fuzzing과 long-run counter-wrap test.</li>
+          </ol>
+          <p><strong>오늘 검증:</strong> capacity 3에서 push_front/back, pop_front/back의 길이 0..9인 <strong>349,525개 모든 operation sequence</strong>를 reference vector와 비교했다. 매 단계 RI, 반환 status/value, 실패 시 output 불변을 검사했고 Apple clang ASan/UBSan을 통과했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">13. Error handling과 overflow 정책</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:8px;border:1px solid #5eead4">정책</th><th align="left" style="padding:8px;border:1px solid #5eead4">적합한 경우</th><th align="left" style="padding:8px;border:1px solid #5eead4">반드시 관측할 것</th></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">Reject / return FULL</td><td style="padding:8px;border:1px solid #5eead4">caller가 retry·shed 가능</td><td style="padding:8px;border:1px solid #5eead4">rejection rate, retry storm</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">Drop new</td><td style="padding:8px;border:1px solid #5eead4">기존 backlog가 더 중요</td><td style="padding:8px;border:1px solid #5eead4">dropped-new count와 data class</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">Drop old / overwrite</td><td style="padding:8px;border:1px solid #5eead4">최신 상태·rolling history</td><td style="padding:8px;border:1px solid #5eead4">sequence gap, overwritten count</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">Block / timeout</td><td style="padding:8px;border:1px solid #5eead4">유실 불가, 흐름 제어 가능</td><td style="padding:8px;border:1px solid #5eead4">wait p50/p99, timeout, deadlock</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">Spill to disk</td><td style="padding:8px;border:1px solid #5eead4">burst 흡수와 durability</td><td style="padding:8px;border:1px solid #5eead4">disk quota, replay, corruption</td></tr>
+          </table>
+          <p><strong>실패 처리 순서:</strong> arguments와 size arithmetic 검증 → resource 확보 → element construct/copy 성공 → index publish. owning element의 copy/move가 실패할 수 있다면 index를 먼저 바꾸지 않는다. resize는 새 storage에 완성 후 포인터를 commit해 old queue를 보존한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">14. 실무 best practice와 anti-pattern</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#99f6e4"><th align="left" style="padding:8px;border:1px solid #5eead4">Best practice</th><th align="left" style="padding:8px;border:1px solid #5eead4">피해야 할 anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">head/tail 용어와 slot 의미를 type 문서에 고정</td><td style="padding:8px;border:1px solid #5eead4">코드마다 tail을 마지막 값/다음 빈 칸으로 혼용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">max occupancy, queueing delay, full count를 계측</td><td style="padding:8px;border:1px solid #5eead4">평균 size만 보고 burst와 p99를 숨김</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">capacity는 burst budget과 처리 지연 SLO로 산정</td><td style="padding:8px;border:1px solid #5eead4">큰 queue로 느린 consumer 문제를 영구 은폐</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">shutdown state에서 blocked producer/consumer를 깨움</td><td style="padding:8px;border:1px solid #5eead4">sentinel만 넣어 multiple consumer가 일부 영원히 대기</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">API에 ownership과 destructor 책임을 명시</td><td style="padding:8px;border:1px solid #5eead4">pointer enqueue 후 producer가 대상 해제</td></tr>
+            <tr><td style="padding:8px;border:1px solid #5eead4">검증된 concurrent queue 또는 lock부터 시작</td><td style="padding:8px;border:1px solid #5eead4"><code>volatile</code> index 두 개로 lock-free라고 주장</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">15. 동시성: SPSC는 왜 acquire/release가 필요한가</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="padding:12px;background:#0f766e;color:white;border-radius:8px"><strong>Producer</strong></td><td style="padding:12px;background:#ccfbf1">space 확인 → slot에 payload write → tail을 <strong>release</strong> publish</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ synchronizes-with</td></tr>
+            <tr><td style="padding:12px;background:#0f766e;color:white;border-radius:8px"><strong>Consumer</strong></td><td style="padding:12px;background:#ccfbf1">tail을 <strong>acquire</strong> load → payload read → head를 release publish</td></tr>
+          </table>
+          <p>tail이 먼저 보이고 payload가 아직 안 보이면 consumer가 미초기화 값을 읽을 수 있다. acquire/release가 index publication 앞뒤의 data access 순서를 연결한다. Linux kernel 문서의 lockless circular buffer도 single producer/single consumer와 memory barrier를 전제로 한다.</p>
+          <ul style="padding-left:22px">
+            <li>Producer만 tail을 쓰고 consumer만 head를 쓰는 ownership이 단순성을 만든다. 반대편 index는 atomic으로 관찰한다.</li>
+            <li>MPMC는 slot별 sequence, ABA/wrap, reclamation, fairness가 얽힌다. 면접에서는 알고리즘 이름보다 memory model과 progress guarantee를 설명하고, 실무에서는 검증된 library를 우선한다.</li>
+            <li>lock-free는 wait-free가 아니다. 시스템 전체가 빨라진다는 뜻도 아니며 bounded queue의 full 정책을 없애 주지도 않는다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">16. Production 사례와 선택</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Network I/O:</strong> descriptor ring은 bounded·preallocated로 tail latency를 제어한다. packet drop, batch size, DMA ownership과 cache coherence가 핵심.</li>
+            <li><strong>Audio/video:</strong> real-time thread에서 allocation·blocking을 피하고 underrun/overrun 정책을 명시한다. 최신 frame 우선이면 drop-old가 가능하다.</li>
+            <li><strong>Logging:</strong> application latency를 보호하려면 bounded async queue가 유용하지만 audit log라면 silent drop은 허용할 수 없다. durability와 backpressure를 분리한다.</li>
+            <li><strong>Sliding window:</strong> Python bounded deque처럼 full에서 반대쪽 오래된 값을 버리는 semantics가 정확히 요구사항일 때만 overwrite를 쓴다.</li>
+            <li><strong>Work stealing:</strong> owner는 한쪽, thief는 반대쪽을 써 contention을 낮추지만 concurrent deque의 correctness는 단순 ring보다 훨씬 어렵다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">17. 언어 표준 구현을 읽는 법</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Java 26 ArrayDeque:</strong> resizable array, 대부분 amortized constant, thread-safe 아님, null 금지. bounded queue가 아니므로 무제한 성장처럼 사용하지 않는다.</li>
+            <li><strong>Rust VecDeque:</strong> growable ring buffer, 양 끝 amortized O(1). wrap되면 두 slice이며 <code>make_contiguous</code>가 회전 비용을 낸다.</li>
+            <li><strong>Python 3.14 deque:</strong> 양 끝 append/pop이 대략 O(1), <code>maxlen</code> bounded deque는 full에서 반대 끝 값을 버린다. 이 semantics가 서비스 요구와 맞는지 확인한다.</li>
+            <li><strong>Java Deque API:</strong> exception형과 special-value형 메서드를 나눈다. null을 허용하면 empty sentinel과 충돌할 수 있어 금지를 권장한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">18. 25분 실습</h2>
+          <ol style="padding-left:22px">
+            <li>위 <code>Deque64</code>에 <code>peek_front/back</code>을 추가하고 실패 시 output 불변을 테스트한다.</li>
+            <li>capacity 1, 2, 3의 모든 길이 8 operation sequence를 reference model과 비교한다.</li>
+            <li><code>head+size</code> 직접 계산을 넣어 SIZE_MAX 근처에서 어떤 계약이 깨지는지 최소 반례를 쓴다.</li>
+            <li>growable ring의 resize를 두 span copy로 구현하고 allocator failure 때 old abstract value가 보존되는지 주입 테스트한다.</li>
+            <li>운영 시나리오 하나를 골라 full 정책, metric 3개, alert threshold, shutdown protocol을 한 문단으로 작성한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">19. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q1. head와 tail만 있는 circular queue에서 empty와 full을 어떻게 구분합니까?</strong><br>같은 index bit pattern이 둘을 표현하는 모호성을 최소 반례로 보인다. size, reserved slot, generation counter, full bit를 비교하고 usable capacity·shared write·wrap 증명 trade-off를 설명한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q2. ArrayDeque와 linked queue 중 무엇이 O(1)입니까?</strong><br>둘 다 양 끝 연산의 점근 비용은 O(1)일 수 있지만 growable array는 resize 호출이 Θ(n), 상각 O(1)이다. linked는 per-node allocation·pointer·cache miss가 있고 ring은 bounded failure·wrap·contiguity split이 있다. workload와 tail latency로 선택한다.</div>
+          <div style="padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q3. volatile head/tail이면 lock-free SPSC queue가 안전합니까?</strong><br>아니다. compiler visibility만이 아니라 data write와 index publish 사이 happens-before가 필요하다. producer release-tail, consumer acquire-tail 및 반대 방향 head publication, single-writer ownership을 설명한다. MPMC로 일반화하지 않고 progress와 reclamation까지 구분한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">20. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>C=8의 reserved-slot ring은 최대 몇 개를 저장하는가? 왜 그런가?</li>
+            <li><code>push_front</code> 뒤 <code>pop_back</code>이 원래 state를 복원하지 않는 최소 sequence를 찾아라.</li>
+            <li>growable deque push의 worst와 amortized complexity를 각각 말하라.</li>
+            <li>wrap된 logical sequence를 네트워크로 순서대로 보낼 때 copy 없는 interface는 무엇을 반환해야 하는가?</li>
+            <li>Day 9의 geometric growth proof가 오늘 growable ring에도 적용되는 이유와 다른 점은?</li>
+            <li>Day 10 linked list가 node handle 삭제에는 유리해도 FIFO queue에서 ring보다 느릴 수 있는 memory-level 이유는?</li>
+            <li>Day 11 stack과 오늘 queue를 graph traversal에서 각각 쓰면 DFS/BFS 순서가 어떻게 달라지는가?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) 7개, head==tail을 empty 하나로 남기기 때문. 2) 예: S=⟨a⟩에서 push_front(x) 후 pop_back은 a를 빼고 ⟨x⟩가 남는다. 같은 끝 push/pop만 역연산. 3) worst Θ(n), amortized Θ(1). 4) logical order의 두 slice 또는 scatter/gather vector. 5) doubling copy의 geometric sum은 같고 wrap된 두 span을 순서대로 복사. 6) allocation, pointer chasing, 낮은 spatial locality. 7) stack은 최근 frontier부터 DFS, queue는 오래된 frontier부터 BFS.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">21. 다음 날 연결</h2>
+          <p>Day 13은 <strong>bounded queue와 backpressure 랩</strong>이다. 오늘 만든 full이라는 자료구조 상태를 시스템의 admission control, timeout, retry, load shedding, Little's Law와 연결한다. “queue를 크게 하면 해결”이 왜 latency와 장애 전파를 숨기는지 실험한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">출처 · 1차 자료</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://www.cs.cornell.edu/courses/cs2110/2026sp/lectures/lec15/" style="color:#0f766e">Cornell CS 2110 — Stacks and Queues</a>: FIFO Queue ADT, deque 확장, array/linked complexity.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Deque.html" style="color:#0f766e">Java SE 26 — Deque</a>: 양 끝 계약, exception/special-value API, queue/stack 대응.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html" style="color:#0f766e">Java SE 26 — ArrayDeque</a>: resizable array, amortized operations, thread-safety 제한.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.VecDeque.html" style="color:#0f766e">Rust std 1.97 — VecDeque</a>: growable ring, two slices, make_contiguous.</li>
+            <li><a href="https://docs.python.org/3/library/collections.html#collections.deque" style="color:#0f766e">Python 3.14 — collections.deque</a>: 양 끝 O(1) 특성, maxlen과 opposite-end discard semantics.</li>
+            <li><a href="https://cdn.kernel.org/doc/html/latest/core-api/circular-buffers.html" style="color:#0f766e">Linux Kernel — Circular Buffers</a>: power-of-two helper, SPSC 전제, acquire/release memory barrier.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-11 Asia/Seoul · benchmark는 이 환경의 비교 자료이며 보편적 성능 보장이 아니다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

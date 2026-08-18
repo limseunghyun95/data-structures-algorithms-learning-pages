@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 07 · 리뷰: 측정값과 점근 분석의 차이</title>
+</head>
+<body style="margin:0;background:#111827;color:#263238;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#312e81;color:#f8fafc">
+          <div style="color:#fbbf24;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 1 / DAY 07 REVIEW</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">측정값과 점근 분석,<br>서로 다른 질문에 답한다</h1>
+          <p style="margin:0;color:#ddd6fe">Static Membership Index · proof → cost model → benchmark → production decision · 80분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #7c3aed;background:#ede9fe;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            Big-Theta는 입력이 커질 때 연산 수의 성장률을 설명하고, benchmark는 특정 구현·기계·데이터에서 상수와 시스템 효과를 측정한다. 계약과 정당성을 먼저 고정한 뒤 둘을 함께 써야 실무 선택이 된다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Cost model</strong></td><td style="padding:10px;border:1px solid #c4b5fd">어떤 기본 연산을 1단위 비용으로 셀지 정한 분석 규칙. 결론은 이 가정에 의존한다.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>점근 분석</strong></td><td style="padding:10px;border:1px solid #c4b5fd">입력 크기 n이 커질 때 비용 함수의 성장률을 상수·낮은 차수 항을 제외해 비교하는 방법.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Θ(g(n))</strong></td><td style="padding:10px;border:1px solid #c4b5fd">충분히 큰 n에서 비용이 g(n)의 양의 상수배 위아래에 모두 갇히는 tight bound.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>상수 계수</strong></td><td style="padding:10px;border:1px solid #c4b5fd">함수 호출·비교·allocation·cache miss처럼 Big-O 표기에서 숨지만 실제 시간에는 보이는 비용.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Preprocessing</strong></td><td style="padding:10px;border:1px solid #c4b5fd">나중 연산을 빠르게 하려고 미리 정렬하거나 index를 만드는 준비 작업.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Crossover point</strong></td><td style="padding:10px;border:1px solid #c4b5fd">두 전략의 실제 총비용 순위가 뒤바뀌는 입력·질의 규모. 이론적 식과 측정 상수에 따라 달라진다.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Benchmark</strong></td><td style="padding:10px;border:1px solid #c4b5fd">고정한 환경과 workload에서 시간·memory 같은 관측값을 반복 수집하는 실험.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Workload</strong></td><td style="padding:10px;border:1px solid #c4b5fd">입력 크기·분포, hit/miss 비율, build 횟수, query 수, update 비율을 합친 실제 작업 모형.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Noise / variance</strong></td><td style="padding:10px;border:1px solid #c4b5fd">다른 process, scheduler, frequency, GC, cache 상태 때문에 같은 코드의 측정값이 흔들리는 현상 / 그 퍼짐.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Latency / throughput</strong></td><td style="padding:10px;border:1px solid #c4b5fd">한 작업의 완료 시간 / 단위 시간에 완료한 작업 수. 서로 관련되지만 같은 지표가 아니다.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>p99</strong></td><td style="padding:10px;border:1px solid #c4b5fd">측정의 99%가 이 값 이하라는 백분위. 평균이 숨기는 느린 tail을 보는 지표.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd"><strong>Profile</strong></td><td style="padding:10px;border:1px solid #c4b5fd">production 실행에서 어느 호출·allocation·I/O가 자원을 소비하는지 위치별로 수집한 증거.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">2. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:29%;padding:13px;background:#6d28d9;color:white;border-radius:9px"><strong>Contract</strong></td><td style="padding:13px;background:#ede9fe">ADT 값·입력·오류·workload의 n, q, update rate 정의</td></tr>
+            <tr><td align="center" colspan="2" style="color:#6d28d9;font-weight:800">↓ 모든 후보가 같은 답을 내는 correctness gate</td></tr>
+            <tr><td style="padding:13px;background:#6d28d9;color:white;border-radius:9px"><strong>Model + proof</strong></td><td style="padding:13px;background:#ede9fe">기본 연산을 세고 RI·postcondition·점근 경계 증명</td></tr>
+            <tr><td align="center" colspan="2" style="color:#6d28d9;font-weight:800">↓ 어느 n·q에서 우세할지 가설과 crossover 도출</td></tr>
+            <tr><td style="padding:13px;background:#6d28d9;color:white;border-radius:9px"><strong>Experiment</strong></td><td style="padding:13px;background:#ede9fe">같은 data·lifecycle·runtime에서 repeat vector와 memory 측정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#6d28d9;font-weight:800">↓ 모델과 값이 다르면 workload·상수·시스템 가정 점검</td></tr>
+            <tr><td style="padding:13px;background:#4338ca;color:white;border-radius:9px"><strong>Production</strong></td><td style="padding:13px;background:#ede9fe">profile·SLO·memory budget·운영 복잡도로 선택, canary와 rollback</td></tr>
+          </table>
+          <p><strong>핵심:</strong> benchmark가 proof를 대신하지 않고, Big-O가 stopwatch를 대신하지 않는다. correctness는 “맞는가”, asymptotics는 “규모가 커질 때 어떻게 자라는가”, measurement는 “이 조건에서 얼마인가”에 답한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> 정수 n개를 한 번 받아 이후 <code>contains(x)</code>를 q번 수행하는 read-only Membership Index를 고른다.</p>
+          <ul style="padding-left:22px">
+            <li><strong>입력:</strong> <code>values</code>는 n개의 비교 가능한 정수, <code>queries</code>는 q개의 정수다. 예시는 hit 50%, miss 50%다.</li>
+            <li><strong>출력:</strong> 각 query가 입력 값 중 하나와 같은지 나타내는 boolean. 중복 수는 관찰하지 않는다.</li>
+            <li><strong>후보 A ScanIndex:</strong> 원래 순서를 tuple에 복사하고 앞에서부터 찾는다.</li>
+            <li><strong>후보 B SortedIndex:</strong> 한 번 정렬한 tuple을 만들고 binary search한다.</li>
+            <li><strong>제약 축:</strong> n, q, rebuild 빈도, hit 위치·비율, comparison 비용, memory ceiling, latency SLO.</li>
+          </ul>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #d6a94c;border-radius:10px"><strong>의사결정 질문:</strong> “binary search가 O(log n)이니 무조건 빠르다”가 아니라 <code>build + q queries</code>라는 전체 lifecycle을 비교해야 한다. q가 작으면 정렬 preprocessing을 회수하지 못할 수 있다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">4. ADT, abstraction function, representation invariant</h2>
+          <p><strong>ADT 계약:</strong> <code>build(values) → Index</code>, <code>Index.contains(x) → bool</code>. Abstract value는 입력의 수학적 set이며, postcondition은 <code>result ⇔ x ∈ set(values)</code>다. index가 생성된 뒤 내부 snapshot은 변하지 않는다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ddd6fe"><th align="left" style="padding:10px;border:1px solid #c4b5fd">표현</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">AF</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">RI</th></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">ScanIndex</td><td style="padding:10px;border:1px solid #c4b5fd"><code>set(_values)</code></td><td style="padding:10px;border:1px solid #c4b5fd"><code>_values</code>는 build 시 복사된 immutable tuple.</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">SortedIndex</td><td style="padding:10px;border:1px solid #c4b5fd"><code>set(_values)</code></td><td style="padding:10px;border:1px solid #c4b5fd">immutable tuple이고 모든 i에 <code>_values[i] ≤ _values[i+1]</code>.</td></tr>
+          </table>
+          <p><strong>Precondition:</strong> 값과 query는 <code>&lt;</code>와 <code>==</code>가 일관된 total order를 이뤄야 한다. NaN처럼 자기 자신과 같지 않거나, 서로 다른 type 간 비교가 실패하는 데이터는 normalization·validation 정책을 먼저 정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">5. 직접 구현: 같은 계약, 다른 표현</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#1e1b4b;color:#ede9fe;padding:16px;border-radius:10px;font-size:13px"><code>from bisect import bisect_left
+
+class ScanIndex:
+    __slots__ = ("_values",)
+
+    def __init__(self, values):
+        self._values = tuple(values)  # caller mutation과 분리
+
+    def contains(self, target):
+        return target in self._values
+
+
+class SortedIndex:
+    __slots__ = ("_values",)
+
+    def __init__(self, values):
+        self._values = tuple(sorted(values))
+
+    def contains(self, target):
+        i = bisect_left(self._values, target)
+        return i &lt; len(self._values) and self._values[i] == target</code></pre>
+          <p><code>bisect_left</code>는 equality로 “찾음”을 판정하지 않고 <code>&lt;</code> 비교로 insertion point를 계산한다. 따라서 반환 index의 범위를 확인한 뒤 명시적으로 equality를 검사한다. immutable tuple은 동시 mutation으로 RI가 깨지는 경로를 닫고, 새 index를 완성한 뒤 reference를 교체하는 snapshot 배포를 가능하게 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">6. 정당성 증명과 최소 반례</h2>
+          <ol style="padding-left:22px">
+            <li><strong>ScanIndex:</strong> Python membership가 tuple의 어떤 원소와 target이 같은 경우에만 true이므로 postcondition과 같다.</li>
+            <li><strong>SortedIndex partition:</strong> <code>i=bisect_left(a,x)</code>이면 RI 아래 <code>a[:i] &lt; x</code>, <code>a[i:] ≥ x</code>다.</li>
+            <li><strong>성공:</strong> <code>i&lt;n and a[i]==x</code>이면 x가 representation에 있으므로 abstract set에도 있다.</li>
+            <li><strong>실패:</strong> i=n이면 모든 값이 x보다 작다. i&lt;n인데 a[i]≠x이면 a[i]&gt;x이고 왼쪽은 모두 x보다 작으므로 x가 없다.</li>
+            <li><strong>종료:</strong> 표준 binary search는 매 반복 탐색 구간 길이를 줄이므로 유한 단계 안에 끝난다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #dc8b8b;border-radius:10px"><strong>최소 반례 1 — RI 무시:</strong> <code>[2,1]</code>을 정렬하지 않고 binary search로 1을 찾으면 실패할 수 있다. <strong>최소 반례 2 — lifecycle 무시:</strong> n=10,000에서 query 1회만 재면서 정렬 build를 제외하면 “Sorted가 빠르다”는 결론은 전체 요청 비용과 다른 질문의 답이다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">7. 시간·공간·amortized 분석</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ddd6fe"><th align="left" style="padding:10px;border:1px solid #c4b5fd">항목</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">ScanIndex</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">SortedIndex</th></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">build</td><td style="padding:10px;border:1px solid #c4b5fd">Θ(n) copy</td><td style="padding:10px;border:1px solid #c4b5fd">comparison sort worst O(n log n), output Θ(n)</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">contains worst</td><td style="padding:10px;border:1px solid #c4b5fd">Θ(n) equality checks</td><td style="padding:10px;border:1px solid #c4b5fd">Θ(log n) order checks</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">q queries total</td><td style="padding:10px;border:1px solid #c4b5fd">Θ(n + qn)</td><td style="padding:10px;border:1px solid #c4b5fd">O(n log n + q log n)</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">retained space</td><td style="padding:10px;border:1px solid #c4b5fd">Θ(n) references</td><td style="padding:10px;border:1px solid #c4b5fd">Θ(n) references; sort 중 temporary memory는 구현 의존</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">locality</td><td style="padding:10px;border:1px solid #c4b5fd">연속 slot을 순차 scan, prefetch에 유리</td><td style="padding:10px;border:1px solid #c4b5fd">연속 slot이지만 탐색 위치가 jump; 훨씬 적은 slot을 읽음</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">amortized 관점</td><td style="padding:10px;border:1px solid #c4b5fd">static lifecycle에는 별도 비싼 연산 분산 없음</td><td style="padding:10px;border:1px solid #c4b5fd">build를 q회에 나누면 query당 preprocessing 부담 O(n log n / q)</td></tr>
+          </table>
+          <p>상수를 무시한 crossover는 <code>n + qn ≈ n log n + q log n</code>에서 구한다. 큰 n에서는 대략 q가 log n 규모를 넘을 때 Sorted가 유리할 가능성이 생긴다. 그러나 scan은 순차 memory access와 C-level loop의 작은 상수를 갖고, 정렬도 구현 상수가 있으므로 실제 경계는 측정해야 한다.</p>
+          <p><strong>주의:</strong> Python의 sort는 adaptive하므로 이미 정렬된 입력에서 더 적은 일을 할 수 있다. 따라서 표의 build는 일반적인 comparison-sort upper bound이며, production 분포까지 포함한 정밀한 bound와 측정은 따로 기록한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">8. Correctness gate와 boundary test</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#1e1b4b;color:#ede9fe;padding:16px;border-radius:10px;font-size:13px"><code>def contract_test(factory):
+    cases = [
+        ([], [-1, 0], [False, False]),
+        ([7], [6, 7, 8], [False, True, False]),
+        ([2, 1, 2], [1, 2, 3], [True, True, False]),
+    ]
+    for values, queries, expected in cases:
+        original = list(values)
+        index = factory(values)
+        values.clear()  # caller mutation이 snapshot에 영향 없어야 함
+        actual = [index.contains(x) for x in queries]
+        assert actual == expected, (factory.__name__, original, actual)
+
+for factory in (ScanIndex, SortedIndex):
+    contract_test(factory)</code></pre>
+          <p>추가로 empty, one element, duplicate, smallest/largest 경계, all-hit/all-miss, random differential test를 실행한다. 정렬 가능한 type만 허용할지, build 중 <code>TypeError</code>를 domain validation error로 변환할지 API 계약에 명시한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">9. 공정한 end-to-end benchmark</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#1e1b4b;color:#ede9fe;padding:16px;border-radius:10px;font-size:13px"><code>from random import Random
+from statistics import median
+from timeit import repeat
+
+def workload(factory, values, queries):
+    index = factory(values)  # build도 timed lifecycle에 포함
+    return sum(index.contains(x) for x in queries)
+
+rng = Random(20260805)
+n = 10_000
+values = list(range(n)); rng.shuffle(values)
+
+for q in (1, 10, 100, 1000):
+    queries = [rng.randrange(n) if i % 2 == 0
+               else n + rng.randrange(n) for i in range(q)]
+    expected = sum(x &lt; n for x in queries)
+    number = 30 if q &lt;= 10 else (5 if q == 100 else 1)
+    for factory in (ScanIndex, SortedIndex):
+        assert workload(factory, values, queries) == expected
+        samples = [t / number for t in repeat(
+            lambda: workload(factory, values, queries),
+            repeat=9, number=number)]
+        print(factory.__name__, min(samples), median(samples), samples)</code></pre>
+          <ul style="padding-left:22px">
+            <li>values·queries 생성은 timed region 밖에 두되, 요청마다 index를 다시 만든다는 lifecycle 가정 때문에 build는 안에 둔다.</li>
+            <li>장기 재사용 index라면 build와 query를 따로 측정하고, 실제 q로 가중한 총비용을 다시 계산한다.</li>
+            <li><code>timeit</code>은 기본적으로 GC를 잠시 끈다. GC가 workload의 일부면 <code>gc.enable()</code> 조건을 별도 실험한다.</li>
+            <li>공식 문서의 권고처럼 min은 외부 간섭이 적은 lower bound로 보고, 전체 vector와 median도 함께 보존한다. production SLO는 load test의 p95/p99로 따로 검증한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">10. 2026-08-05 참고 측정: crossover를 읽는 법</h2>
+          <p>환경: CPython 3.11.6, arm64, macOS 26.5.2. n=10,000, random order, hit/miss 각 50%, build+q queries, 9 repeats. 단위는 run당 ms이며 min/median이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ddd6fe"><th align="left" style="padding:10px;border:1px solid #c4b5fd">q</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">Scan min / median</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">Sorted min / median</th><th align="left" style="padding:10px;border:1px solid #c4b5fd">승자</th></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">1</td><td style="padding:10px;border:1px solid #c4b5fd">0.093 / 0.106</td><td style="padding:10px;border:1px solid #c4b5fd">0.782 / 0.796</td><td style="padding:10px;border:1px solid #c4b5fd">Scan</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">10</td><td style="padding:10px;border:1px solid #c4b5fd">0.445 / 0.451</td><td style="padding:10px;border:1px solid #c4b5fd">0.799 / 0.808</td><td style="padding:10px;border:1px solid #c4b5fd">Scan</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">100</td><td style="padding:10px;border:1px solid #c4b5fd">3.951 / 3.993</td><td style="padding:10px;border:1px solid #c4b5fd">0.810 / 0.836</td><td style="padding:10px;border:1px solid #c4b5fd">Sorted</td></tr>
+            <tr><td style="padding:10px;border:1px solid #c4b5fd">1000</td><td style="padding:10px;border:1px solid #c4b5fd">39.430 / 40.373</td><td style="padding:10px;border:1px solid #c4b5fd">1.099 / 1.102</td><td style="padding:10px;border:1px solid #c4b5fd">Sorted</td></tr>
+          </table>
+          <p><strong>해석:</strong> 이 표는 Θ(n) scan이 q=1·10에서 “이론을 이겼다”는 뜻이 아니다. preprocessing 상수까지 포함한 작은 q에서는 총 연산량이 적었고, q가 커지자 낮은 query 성장률이 build 비용을 회수했다. 관측 crossover는 10과 100 사이지만 정확한 경계를 주장하려면 q를 더 촘촘히 측정하고 confidence와 환경을 기록해야 한다.</p>
+          <p>또한 query hit가 항상 첫 원소에 있으면 Scan의 실제 비교 수는 작아지고, all-miss면 매번 n개를 본다. 같은 n·q라도 분포가 cost model을 바꾼다. 이론과 측정의 불일치는 대개 “누가 틀렸나”보다 “숨은 가정이 무엇인가”를 묻는 신호다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">11. Benchmark 함정과 진단 순서</h2>
+          <ol style="padding-left:22px">
+            <li><strong>정답부터:</strong> differential test와 checksum으로 후보가 같은 결과를 실제 사용했는지 확인한다.</li>
+            <li><strong>범위부터:</strong> data 생성, build, serialization, network 중 어느 lifecycle을 재는지 경계를 그린다.</li>
+            <li><strong>분포부터:</strong> n 하나가 아니라 log-scale n, q, hit/miss·skew·update 비율을 sweep한다.</li>
+            <li><strong>환경부터:</strong> language/runtime version, compiler flags, CPU/OS, GC, core pinning 여부, background load를 기록한다.</li>
+            <li><strong>반복부터:</strong> warm-up 필요 여부를 확인하고 여러 번 측정해 raw vector를 남긴다. 한 번의 평균만 비교하지 않는다.</li>
+            <li><strong>원인부터:</strong> profiler, allocation count, cache miss, I/O wait를 봐서 wall-clock 차이의 원인을 확인한다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #dc8b8b;border-radius:10px"><strong>Anti-pattern:</strong> query만 재고 index build를 숨김, 서로 다른 결과를 내는 코드를 비교, tiny input 한 개로 Big-O를 추론, 평균 하나만 보고 tail 무시, production과 다른 hit 분포 사용, benchmark 결과를 다른 runtime·hardware에 그대로 일반화, profiler 없이 미세 최적화.</div>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">12. Error handling과 production Best Practice</h2>
+          <ul style="padding-left:22px">
+            <li><strong>입력 계약:</strong> null, 혼합 type, NaN, oversized input의 처리 정책과 build resource limit을 API boundary에서 검증한다.</li>
+            <li><strong>실패 원자성:</strong> 새 SortedIndex를 별도 공간에서 완성·검증한 뒤 active reference를 한 번에 교체한다. sort 또는 allocation 실패 시 이전 snapshot을 계속 서비스한다.</li>
+            <li><strong>불변식 보호:</strong> private immutable tuple을 노출하지 않는다. Python 공식 문서도 concurrent mutation 중 <code>bisect</code> 사용 결과를 정의하지 않는다.</li>
+            <li><strong>관측성:</strong> build duration/failure, index age/size, query latency p50/p95/p99, hit ratio, memory와 fallback 횟수를 metric으로 둔다.</li>
+            <li><strong>SLO 기반 선택:</strong> 평균 속도만이 아니라 peak memory, rebuild spike, stale-data 허용시간, 장애 시 degraded scan 가능 여부를 함께 본다.</li>
+            <li><strong>배포:</strong> replay한 production trace로 검증하고 canary에서 old/new 결과와 latency를 shadow compare한다. threshold 악화 시 즉시 이전 index로 rollback한다.</li>
+            <li><strong>회귀 방지:</strong> microbenchmark 결과와 환경을 version control에 저장하되 noise보다 작은 단일 고정 임계값으로 CI를 불안정하게 만들지 않는다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">13. 80분 실습과 decision memo</h2>
+          <ol style="padding-left:22px">
+            <li><strong>15분:</strong> 두 Index, RI, contract test를 직접 작성하고 unsorted 최소 반례를 재현한다.</li>
+            <li><strong>20분:</strong> n=10²…10⁶, q=1…10⁴를 log-scale로 sweep해 실제 crossover 표를 만든다.</li>
+            <li><strong>15분:</strong> all-hit-first, random-hit, all-miss 분포로 바꿔 Scan의 상수가 어떻게 달라지는지 설명한다.</li>
+            <li><strong>15분:</strong> build-only/query-only/end-to-end를 분리해 어떤 질문에 답하는 측정인지 각 한 문장으로 쓴다.</li>
+            <li><strong>15분:</strong> “n, q, rebuild 주기, SLO, memory, 실패 fallback”을 포함한 7문장 production decision memo를 작성한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">14. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <ol style="padding-left:22px">
+            <li><strong>O(n) 알고리즘이 O(log n)보다 실제로 빠를 수 있나요?</strong><br>가능하다. Big-O는 충분히 큰 n의 성장률이며 상수·preprocessing·분포·hardware 효과를 숨긴다. 작은 n/q에서는 sequential scan이 빠를 수 있지만, crossover 이후 순위가 바뀔 가설을 식으로 세우고 측정한다.</li>
+            <li><strong>벤치마크가 이론과 다르면 무엇을 믿나요?</strong><br>둘이 답하는 질문과 가정을 먼저 맞춘다. correctness, lifecycle, n/q 분포, cost model, compiler/runtime, GC와 noise를 점검하고 profiler로 원인을 찾는다. 단일 측정으로 asymptotic claim을 반박하지 않는다.</li>
+            <li><strong>production 자료구조를 어떻게 선택하나요?</strong><br>ADT 계약과 RI를 세우고 각 후보의 worst/amortized 시간·공간을 증명한다. production trace를 재현해 SLO·tail·memory·update 비용을 측정한 뒤 canary, 관측성, 실패 원자성, rollback까지 포함해 결정한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">15. 퀴즈·누적 리뷰·다음 날 연결</h2>
+          <ol style="padding-left:22px">
+            <li>query-only benchmark와 end-to-end benchmark가 각각 답하는 질문은 무엇인가?</li>
+            <li>q가 커질수록 SortedIndex의 preprocessing 비용이 query당 어떻게 상각되는가?</li>
+            <li>all-miss와 hit-first workload에서 ScanIndex 비교 횟수는 어떻게 다른가?</li>
+            <li><code>bisect_left</code> 결과에 왜 range check와 equality check가 모두 필요한가?</li>
+            <li><strong>Day 01 회상:</strong> 두 representation이 같은 ADT를 구현한다는 말의 관찰 가능한 기준은?</li>
+            <li><strong>Day 02~03 회상:</strong> worst, average, amortized와 측정 평균을 서로 바꾸어 말하면 안 되는 이유는?</li>
+            <li><strong>Day 04~06 회상:</strong> RI·correctness gate 없이 더 빠른 benchmark 결과를 채택하면 어떤 실패가 생기는가?</li>
+          </ol>
+          <p><strong>Week 1 review 답안:</strong> ADT 계약 → representation과 RI → 정당성 → cost model과 worst/amortized bound → 재현 가능한 measurement → production trade-off 순서로 설명하면 구현, 이론, 운영이 한 흐름으로 연결된다.</p>
+          <p><strong>내일 연결:</strong> Day 08부터 Array로 들어간다. 같은 Θ(n) 순회도 연속 memory와 linked nodes에서 왜 실제 비용이 달라지는지 cache line, spatial locality, stride, pointer chasing 관점으로 파고든다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#5b21b6">16. 출처와 더 깊게 보기</h2>
+          <ul style="padding-left:22px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/6b9b20992d8c6a0f3f10a34ff7878aa9_MIT6_006F11_lec02.pdf" style="color:#5b21b6">MIT 6.006 Lecture 2 — Models of Computation</a>: model이 허용 연산과 시간·공간 비용을 정의하고 total cost를 합산한다.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/aa4f264093faf990054cc4820553bb46_MIT6_006S20_lec20.pdf" style="color:#5b21b6">MIT 6.006 Lecture 20 — Course Review</a>: correctness와 computation model 아래의 asymptotic performance를 함께 다룬다.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-172-performance-engineering-of-software-systems-fall-2018/resources/mit6_172f18_lec10/" style="color:#5b21b6">MIT 6.172 Lecture 10 — Measurement and Timing</a>: performance engineering의 측정·timing 강의 자료.</li>
+            <li><a href="https://docs.python.org/3/library/timeit.html" style="color:#5b21b6">Python 3.14 timeit 공식 문서</a>: repeat, GC 정책, min과 전체 result vector 해석.</li>
+            <li><a href="https://docs.python.org/3/library/bisect.html" style="color:#5b21b6">Python 3.14 bisect 공식 문서</a>: insertion-point partition contract, O(log n) search와 O(n) insertion, concurrent mutation 주의.</li>
+          </ul>
+          <p style="margin-top:26px;padding:14px;background:#ede9fe;border-radius:10px"><strong>면접용 30초 결론:</strong> “복잡도는 scale에 대한 model이고 benchmark는 특정 환경의 evidence입니다. 저는 ADT와 invariant로 correctness를 고정한 뒤 전체 lifecycle 비용식을 세우고, production 분포로 crossover와 tail·memory를 측정해 canary/rollback 가능한 선택을 합니다.”</p>
+        </td></tr>
+        <tr><td style="padding:20px 34px;background:#312e81;color:#ddd6fe;text-align:center;font-size:12px">DS&amp;A 심화 커리큘럼 · Day 07 / 84 · theory × evidence × production</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
