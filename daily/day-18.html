@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 18 · resizing과 amortized cost</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#0f766e;color:#f0fdfa">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 3 / DAY 18</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">평균 O(1) 뒤에 숨은<br>resize spike를 설계하라</h1>
+          <p style="margin:0;color:#ccfbf1">Geometric growth → amortized proof → failure atomicity → tail-latency policy · 115분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #0f766e;background:#ccfbf1;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            hash table resize는 한 번에 Θ(n)이지만 용량을 기하급수적으로 키우고 grow·shrink 사이에 hysteresis를 두면 연산열의 상각 비용은 O(1)이다. 단, 상각 O(1)은 단일 요청의 지연·OOM·peak memory·iterator 안전성을 보장하지 않는다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Capacity m</strong></td><td style="padding:9px;border:1px solid #99f6e4">현재 table이 가진 bucket 또는 slot의 수. 저장된 mapping 수 n과 다르다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Load factor α</strong></td><td style="padding:9px;border:1px solid #99f6e4"><code>n/m</code>. open addressing은 tombstone을 포함한 used α도 따로 본다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Resize</strong></td><td style="padding:9px;border:1px solid #99f6e4">capacity를 바꾸는 작업. 새 storage 할당과 entry 이동이 필요하다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Rehash</strong></td><td style="padding:9px;border:1px solid #99f6e4">새 capacity·probe 규칙에 맞춰 모든 live key의 위치를 다시 계산해 삽입하는 작업.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Geometric growth</strong></td><td style="padding:9px;border:1px solid #99f6e4">capacity를 <code>m←γm</code>, γ&gt;1처럼 배수로 키우는 정책. doubling은 γ=2다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Amortized cost</strong></td><td style="padding:9px;border:1px solid #99f6e4">확률 평균이 아니라 어떤 연산열 전체 비용을 연산 수로 나눈 보장. 가끔의 비싼 작업을 많은 싼 작업에 분산한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Aggregate method</strong></td><td style="padding:9px;border:1px solid #99f6e4">k개 연산의 실제 비용 합을 직접 상한으로 묶는 상각 분석법.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Accounting method</strong></td><td style="padding:9px;border:1px solid #99f6e4">싼 연산에 credit을 미리 부과해 미래의 비싼 resize 비용을 지불하는 분석법.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Potential Φ</strong></td><td style="padding:9px;border:1px solid #99f6e4">자료구조 상태에 쌓인 미래 작업량을 수치화한다. 상각 비용은 실제 비용 + potential 변화다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Hysteresis</strong></td><td style="padding:9px;border:1px solid #99f6e4">grow와 shrink threshold 사이에 간격을 둬 경계 왕복으로 인한 resize thrashing을 막는 정책.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Failure atomicity</strong></td><td style="padding:9px;border:1px solid #99f6e4">resize가 실패하면 관찰 가능한 map이 작업 전과 동일해야 한다는 성질.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Stop-the-world grow</strong></td><td style="padding:9px;border:1px solid #99f6e4">한 연산이 전체 migration을 끝낼 때까지 다른 작업이 기다리는 단순한 방식.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Incremental migration</strong></td><td style="padding:9px;border:1px solid #99f6e4">각 operation이 제한된 bucket·group만 옮겨 resize 지연을 여러 요청에 나누는 방식.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #99f6e4"><strong>Tail latency</strong></td><td style="padding:9px;border:1px solid #99f6e4">p99·p99.9·max처럼 가장 느린 일부 요청의 지연. 평균이 좋아도 서비스 SLO를 깨뜨릴 수 있다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">2. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>① Observe</strong></td><td style="padding:13px;background:#f0fdfa">live α·used α·probe tail·memory budget·expected entries</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ 새 mapping인가? update는 n을 늘리지 않는다</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>② Decide</strong></td><td style="padding:13px;background:#f0fdfa">grow / shrink / same-size cleanup / no-op</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ checked capacity·peak bytes·latency SLO</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>③ Prepare</strong></td><td style="padding:13px;background:#f0fdfa">new table 할당·초기화, old table은 authoritative</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ monolithic migrate 또는 bounded incremental step</td></tr>
+            <tr><td style="padding:13px;background:#0f766e;color:white;border-radius:9px"><strong>④ Publish</strong></td><td style="padding:13px;background:#f0fdfa">RI 검사 → root pointer swap → old reclaim</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ 실패는 old 유지, 성공은 invalidation 계약 적용</td></tr>
+            <tr><td style="padding:13px;background:#115e59;color:white;border-radius:9px"><strong>⑤ Verify</strong></td><td style="padding:13px;background:#f0fdfa">rehash count·pause max·peak RSS·OOM·iterator test</td></tr>
+          </table>
+          <p><strong>핵심 분기:</strong> live α가 높으면 grow, live α는 낮지만 tombstone 때문에 used α가 높으면 same-size rehash, 장기간 낮은 live α와 memory pressure가 함께 있으면 shrink를 고려한다. “느리다”는 한 신호만으로 모두 grow하면 메모리와 GC 비용을 악화시킨다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> API gateway의 64-bit request ID를 idempotency result에 연결하는 in-memory map이다. 평시 50만 건, burst 100만 건, 70% lookup·20% insert/update·10% delete, p99 500µs, container memory 128MiB다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ccfbf1"><th align="left" style="padding:8px;border:1px solid #99f6e4">질문</th><th align="left" style="padding:8px;border:1px solid #99f6e4">설계에 미치는 영향</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">최대 n을 아는가?</td><td style="padding:8px;border:1px solid #99f6e4">알면 <code>reserve(ceil(n/αmax))</code>로 runtime grow를 줄인다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">burst 후 다시 줄어드는가?</td><td style="padding:8px;border:1px solid #99f6e4">즉시 shrink보다 cooldown·low-watermark·memory pressure를 결합한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">한 번의 pause 허용?</td><td style="padding:8px;border:1px solid #99f6e4">불가하면 shard·segment·incremental migration을 선택한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">entry 이동이 throw/fail?</td><td style="padding:8px;border:1px solid #99f6e4">copy/move/hash 실패와 allocator OOM의 commit 경계를 설계한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">handle 안정성?</td><td style="padding:8px;border:1px solid #99f6e4">rehash가 iterator·pointer·reference 중 무엇을 무효화하는지 API 계약을 확인한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">동시 reader/writer?</td><td style="padding:8px;border:1px solid #99f6e4">root publish, old reclamation, migration ownership에 lock/epoch/RCU가 필요하다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">4. Map ADT와 resizing representation invariant</h2>
+          <p><strong>ADT:</strong> 외부에서는 여전히 유한 부분함수 <code>M: K ⇀ V</code>다. capacity·rehash·old/new table은 표현일 뿐, resize 전후 모든 key의 get 결과와 size가 같아야 한다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1 capacity:</strong> 구현이 요구하는 최소값·power-of-two/prime 조건을 만족하고 <code>0≤size≤max_live(capacity)</code>다.</li>
+            <li><strong>RI-2 uniqueness:</strong> 같은 equality key는 authoritative storage 전체에 정확히 하나다.</li>
+            <li><strong>RI-3 reachability:</strong> 모든 live key는 현재 capacity의 hash/probe 규칙으로 찾을 수 있다. old slot을 같은 index로 memcpy하는 것은 일반적으로 충분하지 않다.</li>
+            <li><strong>RI-4 count:</strong> live/tombstone counter와 control state의 실제 개수가 일치한다.</li>
+            <li><strong>RI-5 commit:</strong> monolithic resize 동안 old가 authoritative이고, new가 완성된 뒤 한 번의 publish로 바뀐다.</li>
+            <li><strong>RI-6 incremental ownership:</strong> migration cursor 이전의 old bucket은 new가, 이후 bucket은 old가 authoritative다. put/get/delete는 key의 old-home ownership을 따라 같은 table로 간다.</li>
+            <li><strong>RI-7 reclaim:</strong> 어떤 reader·iterator도 old를 참조하지 않을 때만 old storage를 해제한다.</li>
+          </ol>
+          <p><strong>주의:</strong> RI-6의 bucket 단위 migration은 chaining·segmented 설계에서 설명하기 쉽다. flat open addressing은 한 slot 이동이 다른 key의 probe 증명을 깨뜨릴 수 있어 table 전체, 독립 group/table, 또는 엄밀한 dual-table protocol 단위로 옮겨야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">5. 왜 add-1 growth는 Θ(n²)이고 doubling은 Θ(n)인가</h2>
+          <p>capacity가 찰 때마다 1칸만 늘리면 migration 비용은 <code>1+2+…+(n-1)=n(n-1)/2=Θ(n²)</code>다. n번 insert의 평균도 Θ(n)이 된다.</p>
+          <p>doubling이면 rebuild 시점의 크기가 <code>1,2,4,…,2ᵏ</code>다. n≤2ᵏ⁺¹일 때 이동 총합은 <code>1+2+4+…+2ᵏ=2ᵏ⁺¹−1&lt;2n</code>. 각 insert 자체 O(1)을 더해도 n개 insert 전체 expected Θ(n), 한 insert의 amortized expected O(1)이다.</p>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>면접에서 꼭 분리:</strong> hash collision 때문에 기본 put이 expected O(1)이라는 가정과, resize 비용이 amortized O(1)이라는 보장은 서로 다른 분석 축이다. adversarial collision이면 resize를 잘해도 lookup/put worst-case O(n)이 남는다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">6. Aggregate·Accounting·Potential 세 증명</h2>
+          <h3 style="color:#115e59">Aggregate</h3>
+          <p>위 geometric sum으로 n개 insert의 base work n과 migration work &lt;2n을 합쳐 &lt;3n으로 묶는다. 모든 연산열에 대한 총비용 상한이므로 확률적 average와 다르다.</p>
+          <h3 style="color:#115e59">Accounting</h3>
+          <p>grow 직후 다음 grow까지 최소 Θ(m)개의 새 insert가 들어온다. 각 insert에 실제 비용 1 외에 일정 credit를 붙여 entry migration 통장에 적립하면 다음 Θ(m) rebuild를 지불하고도 credit가 음수가 되지 않는다. 성장률 γ가 1에 가까울수록 grow 간격이 짧아져 필요한 상수 credit는 커진다.</p>
+          <h3 style="color:#115e59">Potential</h3>
+          <p>classic full-doubling table에서 <code>Φ(T)=2n−m</code>를 쓴다(α≥1/2 구간). 일반 insert는 actual 1, ΔΦ=2라 상각 비용 3이다. full table을 2m으로 grow하며 insert할 때 actual은 기존 m개 이동+1이지만 capacity 증가로 potential이 크게 떨어져 이 비용을 상쇄한다. shrink까지 포함하면 α≥1/2와 α&lt;1/2에 piecewise potential을 사용해 grow·shrink 모두 O(1) amortized를 보인다.</p>
+          <p><strong>γ trade-off:</strong> 큰 γ는 rebuild 빈도와 amortized 상수를 줄이지만 slack memory와 peak allocation을 늘린다. 작은 γ는 memory를 촘촘히 쓰지만 migration·allocator 호출이 잦다. γ는 알고리즘 상수이자 운영 파라미터다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">7. Shrink hysteresis와 최소 thrashing 반례</h2>
+          <p>grow와 shrink를 같은 α=0.5에서 실행한다고 하자. n=m/2인 table에 insert 하나를 하면 grow, 곧바로 delete 하나를 하면 shrink한다. 이 두 연산을 반복하면 매번 Θ(n) migration이 발생해 상각 O(1)이 깨진다.</p>
+          <p><strong>해결:</strong> 예를 들어 α&gt;0.75에서 grow, α&lt;0.20에서 shrink-to-half한다. grow 직후 다시 shrink하려면 충분한 delete가, shrink 직후 다시 grow하려면 충분한 insert가 필요하다. 여기에 최소 capacity, cooldown, sustained-low watermark를 더하면 burst 직후의 메모리 진동을 막는다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ccfbf1"><th style="padding:8px;border:1px solid #99f6e4">상태</th><th style="padding:8px;border:1px solid #99f6e4">선택</th><th style="padding:8px;border:1px solid #99f6e4">이유</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">live .78 / used .78</td><td style="padding:8px;border:1px solid #99f6e4">grow</td><td style="padding:8px;border:1px solid #99f6e4">공간과 EMPTY 모두 부족</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">live .35 / used .82</td><td style="padding:8px;border:1px solid #99f6e4">same-size rehash</td><td style="padding:8px;border:1px solid #99f6e4">tombstone debt 제거, capacity 증가는 불필요</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">live .12 / used .15, 장기 지속</td><td style="padding:8px;border:1px solid #99f6e4">shrink 후보</td><td style="padding:8px;border:1px solid #99f6e4">memory 회수 이득이 migration 비용보다 큼</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">live .12, 곧 재상승 예정</td><td style="padding:8px;border:1px solid #99f6e4">유지</td><td style="padding:8px;border:1px solid #99f6e4">재성장 비용과 thrash 방지</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">8. 직접 구현: failure-atomic monolithic resize</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#134e4a;color:#f0fdfa;padding:16px;border-radius:10px;font-size:13px"><code>ResizeResult resize(Map *t, size_t requested) {
+  size_t new_cap, bytes;
+  if (!normalize_capacity(requested, &amp;new_cap) ||
+      !checked_mul(new_cap, sizeof(Slot), &amp;bytes))
+    return CAPACITY_OVERFLOW;
+
+  Slot *next = alloc_zeroed(bytes);
+  if (next == NULL) return OUT_OF_MEMORY;   // old는 그대로
+
+  for (size_t i = 0; i &lt; t-&gt;capacity; ++i) {
+    if (t-&gt;slots[i].state != FULL) continue;
+    if (!insert_no_grow(next, new_cap,
+                        t-&gt;slots[i].key, t-&gt;slots[i].value)) {
+      destroy_constructed(next, new_cap);
+      free(next);
+      return MIGRATION_FAILED;              // rollback 불필요
+    }
+  }
+
+  Slot *old = t-&gt;slots;                     // commit point
+  t-&gt;slots = next;
+  t-&gt;capacity = new_cap;
+  t-&gt;deleted = 0;
+  free_after_readers_quiesce(old);
+  return RESIZED;
+}</code></pre>
+          <p><strong>순서가 계약이다:</strong> old payload를 먼저 move-from 또는 destroy하면 중간 실패 시 복구할 수 없다. copy가 불가능하고 move가 실패할 수 있는 타입이라면 node indirection, noexcept move 제약, transaction log 등 표현 자체를 바꿔야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">9. Incremental migration state machine</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="padding:12px;background:#0f766e;color:white;border-radius:8px"><strong>NORMAL</strong></td><td style="padding:12px;background:#f0fdfa">한 table, threshold 초과 시 new 할당</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ old/new/cursor=0 publish</td></tr>
+            <tr><td style="padding:12px;background:#0f766e;color:white;border-radius:8px"><strong>MIGRATING</strong></td><td style="padding:12px;background:#f0fdfa">operation마다 ≤B bucket 이동; key의 old-home이 cursor보다 작은지로 authoritative table 결정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ cursor==old.bucket_count, active reader 0</td></tr>
+            <tr><td style="padding:12px;background:#115e59;color:white;border-radius:8px"><strong>COMMIT/RECLAIM</strong></td><td style="padding:12px;background:#f0fdfa">new을 root로 확정하고 old 해제</td></tr>
+          </table>
+          <ul style="padding-left:22px">
+            <li><strong>장점:</strong> 한 요청이 지불하는 migration work를 B로 제한해 pause를 낮춘다.</li>
+            <li><strong>대가:</strong> 두 table, routing branch, cursor, 동시성, iteration, crash/retry 상태가 복잡해진다.</li>
+            <li><strong>진행 보장:</strong> traffic이 없으면 migration이 영원히 끝나지 않을 수 있어 background worker 또는 maintenance tick이 필요하다.</li>
+            <li><strong>overload:</strong> 새 insert 속도가 migration 속도보다 빠르면 new도 차오른다. migration debt와 completion ETA를 관측하고 admission control을 둔다.</li>
+          </ul>
+          <p>현재 Go runtime map 구현은 큰 map의 incremental growth를 위해 hash space를 여러 table로 나누고 개별 table grow/split 크기를 제한한다. 이는 “flat table slot 몇 개만 무작정 옮기기”보다 invariant 경계를 작게 만드는 production 설계 사례다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">10. Complexity·memory·invalidation 표</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#ccfbf1"><th style="padding:7px;border:1px solid #99f6e4">항목</th><th style="padding:7px;border:1px solid #99f6e4">Monolithic</th><th style="padding:7px;border:1px solid #99f6e4">Incremental/segmented</th></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">총 migration</td><td style="padding:7px;border:1px solid #99f6e4">Θ(n)</td><td style="padding:7px;border:1px solid #99f6e4">전체 Θ(n), step당 bounded</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">단일 op worst</td><td style="padding:7px;border:1px solid #99f6e4">Θ(n)</td><td style="padding:7px;border:1px solid #99f6e4">설계상 O(B)+lookup, 단 publish/reclaim 주의</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">peak storage</td><td style="padding:7px;border:1px solid #99f6e4">old+new+allocator overhead</td><td style="padding:7px;border:1px solid #99f6e4">old+new이 더 오래 공존</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">lookup path</td><td style="padding:7px;border:1px solid #99f6e4">resize 외 한 table</td><td style="padding:7px;border:1px solid #99f6e4">migration routing/두 table 가능</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">implementation</td><td style="padding:7px;border:1px solid #99f6e4">단순·검증 쉬움</td><td style="padding:7px;border:1px solid #99f6e4">ownership·iteration·reclamation 복잡</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">iterator/handle</td><td style="padding:7px;border:1px solid #99f6e4">commit 때 invalidation</td><td style="padding:7px;border:1px solid #99f6e4">migration 중 이중 상태 계약 필요</td></tr>
+          </table>
+          <p>C++ unordered container 계약은 rehash가 iterator를 무효화하고 bucket/order를 바꾸지만 element pointer/reference는 유지한다고 규정한다. flat hash map처럼 payload 자체가 이동하는 구현은 계약이 다를 수 있으므로 컨테이너 이름만 보고 추정하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">11. Benchmark: 총시간과 tail을 함께 보라</h2>
+          <p><strong>환경:</strong> Apple clang 21.0.0 <code>-O3</code>, arm64 macOS 26.5.2, C11 open-addressing map, max live α=.75, 64-bit key/value, 500,000 unique insert, warm-up 후 5회 중앙값. 각 insert를 <code>mach_continuous_time</code>으로 계측했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#ccfbf1"><th style="padding:7px;border:1px solid #99f6e4">정책</th><th style="padding:7px;border:1px solid #99f6e4">rehash</th><th style="padding:7px;border:1px solid #99f6e4">insert 총 ms</th><th style="padding:7px;border:1px solid #99f6e4">p50 / p99</th><th style="padding:7px;border:1px solid #99f6e4">max</th><th style="padding:7px;border:1px solid #99f6e4">peak/final MiB</th></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">16부터 doubling</td><td align="center" style="padding:7px;border:1px solid #99f6e4">16</td><td align="center" style="padding:7px;border:1px solid #99f6e4">33.468</td><td align="center" style="padding:7px;border:1px solid #99f6e4">41ns / 167ns</td><td align="center" style="padding:7px;border:1px solid #99f6e4">3.088ms</td><td align="center" style="padding:7px;border:1px solid #99f6e4">36 / 24</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4">capacity 사전 지정</td><td align="center" style="padding:7px;border:1px solid #99f6e4">0</td><td align="center" style="padding:7px;border:1px solid #99f6e4">37.283</td><td align="center" style="padding:7px;border:1px solid #99f6e4">42ns / 208ns</td><td align="center" style="padding:7px;border:1px solid #99f6e4">0.032ms</td><td align="center" style="padding:7px;border:1px solid #99f6e4">24 / 24</td></tr>
+          </table>
+          <p><strong>해석:</strong> 동적 방식은 작은 table이 초반 cache에 잘 맞아 총시간이 오히려 조금 짧았지만 최악 insert는 약 96배 느렸다. 사전 지정은 tail과 resize peak memory를 줄였지만 큰 sparse table을 처음부터 만지는 locality 비용이 있었다. 평균·총량·tail·memory 중 무엇을 최적화하는지 먼저 정해야 한다.</p>
+          <p><strong>benchmark 주의:</strong> allocator의 lazy page commit 때문에 reserve 호출 시간만 재면 메모리 비용을 과소평가한다. capacity transition별 latency, page fault, RSS/peak RSS, cache miss, hash 비용, key move/destructor, GC pause를 함께 재고 p99가 resize event를 놓치지 않도록 max와 event trace도 남긴다. sanitizer 수치는 성능 비교에 쓰지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">12. 테스트 전략</h2>
+          <ol style="padding-left:22px">
+            <li>capacity 2/4/8 경계의 직전·직후 insert에서 모든 key와 size가 유지되는지 검사한다.</li>
+            <li>같은 key update는 size 증가나 불필요한 grow를 만들지 않는지 본다.</li>
+            <li>allocation을 모든 가능한 지점에서 강제 실패시키고 old snapshot·counter·iterator 계약이 보존되는지 확인한다.</li>
+            <li><code>capacity*sizeof(Slot)</code>, <code>ceil(expected/αmax)</code>, doubling의 overflow를 checked arithmetic로 검사한다.</li>
+            <li>grow/shrink threshold 주변 operation sequence를 model-check해 resize 횟수가 연산 수에 선형 이하인지 본다.</li>
+            <li>incremental이면 migration step마다 ownership·uniqueness·lookup equivalence를 reference map과 differential test한다.</li>
+            <li>동시성 구현은 publish/reclaim 사이 reader interleaving, cancellation, shutdown, background worker 정지를 검증한다.</li>
+          </ol>
+          <p><strong>이번 검증:</strong> C11 구현은 매 run 뒤 count·load·reachability RI를 검사했다. Apple clang 21.0.0 <code>-Wall -Wextra -Werror</code>와 ASan/UBSan에서 dynamic 16회 grow 및 presized 경로를 각각 5회 통과했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">13. Error handling과 운영 정책</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ccfbf1"><th align="left" style="padding:8px;border:1px solid #99f6e4">실패</th><th align="left" style="padding:8px;border:1px solid #99f6e4">안전한 처리</th><th align="left" style="padding:8px;border:1px solid #99f6e4">놓치기 쉬운 함정</th></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">capacity overflow</td><td style="padding:8px;border:1px solid #99f6e4">곱셈 전 상한 검사, 명시적 error</td><td style="padding:8px;border:1px solid #99f6e4">wrap 후 작은 allocation·큰 index</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">allocation OOM</td><td style="padding:8px;border:1px solid #99f6e4">old 유지, try_reserve/RETRY/FULL 구분</td><td style="padding:8px;border:1px solid #99f6e4">old부터 파괴해 data loss</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">hash/move 실패</td><td style="padding:8px;border:1px solid #99f6e4">new cleanup, old unchanged 또는 타입 제약</td><td style="padding:8px;border:1px solid #99f6e4">부분 migration을 성공으로 publish</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">deadline 임박</td><td style="padding:8px;border:1px solid #99f6e4">reserve·shard·background step·admission control</td><td style="padding:8px;border:1px solid #99f6e4">요청 thread가 무조건 full rehash</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">migration 정체</td><td style="padding:8px;border:1px solid #99f6e4">debt/ETA metric, worker와 assist budget</td><td style="padding:8px;border:1px solid #99f6e4">traffic 없으면 old 영구 보존</td></tr>
+            <tr><td style="padding:8px;border:1px solid #99f6e4">stale iterator</td><td style="padding:8px;border:1px solid #99f6e4">generation·lifetime 계약·epoch reclaim</td><td style="padding:8px;border:1px solid #99f6e4">rehash 뒤 raw slot pointer 사용</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">14. 실무 best practice와 anti-pattern</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Best:</strong> 예상 mapping 수를 안다면 API의 <code>reserve</code>/<code>with_capacity</code>/initial-capacity를 쓴다. Rust는 overflow·allocator 실패를 반환하는 <code>try_reserve</code>도 제공한다.</li>
+            <li><strong>Best:</strong> grow, tombstone cleanup, shrink를 별도 trigger와 metric으로 운영한다.</li>
+            <li><strong>Best:</strong> resize count·duration·moved entries·peak bytes·migration debt·probe tail을 trace에 남긴다.</li>
+            <li><strong>Best:</strong> latency-sensitive path는 shard별 작은 rebuild, bounded assist, 미리 reserve한 spare table을 검토한다.</li>
+            <li><strong>Anti:</strong> 매 delete 후 <code>shrink_to_fit</code>. churn에서는 CPU·allocator·cache를 태운다.</li>
+            <li><strong>Anti:</strong> 상각 O(1)을 p99 O(1)로 설명. 한 operation의 Θ(n)은 그대로다.</li>
+            <li><strong>Anti:</strong> capacity를 entry 수와 동일시. threshold·bucket/group granularity 때문에 실제 allocation은 더 클 수 있다.</li>
+            <li><strong>Anti:</strong> resize 중 old/new 양쪽에 같은 key를 무규칙하게 쓰고 lookup 순서로 덮는다. uniqueness와 최신값 계약이 깨진다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">15. 35분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>8분:</strong> grow 0.75, shrink 0.20, minimum capacity 16의 state transition을 작성한다.</li>
+            <li><strong>8분:</strong> overflow/OOM injection이 가능한 failure-atomic resize를 구현한다.</li>
+            <li><strong>7분:</strong> reference dict와 capacity 경계 operation sequence를 differential test한다.</li>
+            <li><strong>7분:</strong> 50만 insert에서 total·p99·max·peak bytes를 dynamic/presized로 비교한다.</li>
+            <li><strong>5분:</strong> 예상 n 오차 ±50%, memory 128MiB, p99 500µs 조건의 정책을 ADR로 방어한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ccfbf1;border-radius:10px"><strong>Q1. hash map insert가 O(1)이라고 말해도 되나요?</strong><br>hash 분포 가정 아래 expected lookup/insert와 geometric resize의 amortized O(1)을 분리한다. 단일 insert worst Θ(n), collision worst Θ(n), resize tail·OOM·memory는 별도라고 답한다. geometric sum 또는 potential 증명을 짧게 보인다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ccfbf1;border-radius:10px"><strong>Q2. delete가 많을 때 왜 바로 shrink하지 않나요?</strong><br>동일 threshold는 insert/delete 두 번으로 Θ(n) thrashing을 만든다. grow/shrink hysteresis, cooldown, 최소 capacity, live/used α 분리, same-size cleanup과 shrink의 차이를 설명한다.</div>
+          <div style="padding:16px;background:#ccfbf1;border-radius:10px"><strong>Q3. p99가 중요한 서비스에서 resize를 어떻게 설계하나요?</strong><br>expected size reserve, sharding/segmentation, bounded incremental migration, request assist budget, peak memory·OOM fallback, iterator/reclamation 계약, resize event trace를 제시한다. 상각 보장은 tail SLO가 아니라고 먼저 선을 긋는다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>capacity를 한 칸씩 키울 때 n개 insert가 Θ(n²)인 geometric-sum 반대 증명은?</li>
+            <li>doubling의 single-operation worst와 amortized cost는 각각 무엇인가?</li>
+            <li>grow .5, shrink .5가 만드는 최소 thrashing operation sequence는?</li>
+            <li>live α=.3, used α=.85라면 grow·shrink·same-size 중 무엇을 먼저 검토하는가?</li>
+            <li>failure-atomic resize에서 root pointer swap이 allocation보다 뒤여야 하는 이유는?</li>
+            <li>Day 3의 accounting/potential과 오늘 geometric growth가 어떻게 연결되는가?</li>
+            <li>Day 17 tombstone이 shrink가 아니라 same-size rehash를 요구할 수 있는 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) 1+…+n. 2) Θ(n), amortized expected O(1). 3) 경계에서 insert/delete 반복. 4) tombstone cleanup. 5) 실패 시 old authoritative state 보존. 6) 싼 insert에 미래 rebuild credit/potential 축적. 7) live 공간은 충분하지만 EMPTY와 probe 성능만 회복하면 되기 때문.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">18. 다음 날 연결</h2>
+          <p>Day 19는 <strong>equality/hash contract와 collision attack</strong>이다. 동등한 key의 hash 일치 의무, mutable key, NaN·Unicode·composite key 함정, hash flooding의 worst-case와 keyed hash·treeification·rate limit을 다룬다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://www.ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/160b3b5f9da2e03815ca1e6ee0dba62a_MIT6_006F11_lec09.pdf" style="color:#0f766e">MIT 6.006 Lecture 9 — Hashing II</a>: table doubling, Θ(n) rehash, grow/shrink threshold와 O(1) amortized 분석.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-046j-introduction-to-algorithms-sma-5503-fall-2005/0a02bc84e917b9aeddaf69c8dc151a6f_lec13.pdf" style="color:#0f766e">MIT 6.046J Lecture 13 — Amortized Analysis</a>: dynamic table의 aggregate·accounting·potential method.</li>
+            <li><a href="https://doc.rust-lang.org/stable/std/collections/hash_map/struct.HashMap.html" style="color:#0f766e">Rust Standard Library — HashMap</a>: reserve/try_reserve, capacity overflow·allocation error, shrink_to_fit 정책.</li>
+            <li><a href="https://eel.is/c%2B%2Bdraft/unord.req" style="color:#0f766e">C++ Working Draft — Unordered associative containers</a>: rehash의 bucket/order 변화, iterator invalidation, pointer/reference와 exception-safety 계약.</li>
+            <li><a href="https://github.com/golang/go/blob/master/src/internal/runtime/maps/map.go" style="color:#0f766e">Go Runtime Source — internal/runtime/maps</a>: table split을 통한 incremental growth와 migration·iteration 불변식.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html" style="color:#0f766e">Java SE 26 — HashMap</a>: initial capacity·load factor·rehash와 iteration time의 time/space trade-off.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-19 Asia/Seoul · 공식 문서와 대학 자료를 확인했으며 benchmark 수치는 명시된 구현·환경에만 해당한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
