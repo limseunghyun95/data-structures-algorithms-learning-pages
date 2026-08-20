@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 19 · equality/hash contract와 collision attack</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#9f1239;color:#fff1f2">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 3 / DAY 19</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">같은 key는 같은 곳으로,<br>공격 key는 예측 못 하게</h1>
+          <p style="margin:0;color:#fecdd3">Equality law → hash implication → mutable-key failure → hash flooding defense · 120분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #be123c;background:#ffe4e6;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            hash map의 정당성은 <code>equal(a,b) ⇒ hash(a)=hash(b)</code>와 key의 안정성에 달려 있고, 성능은 공격자가 collision을 예측하지 못하게 하는 keyed hash·최악 비용 제한·입력 예산을 함께 적용해야 지킬 수 있다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Identity</strong></td><td style="padding:9px;border:1px solid #fecdd3">두 reference가 바로 같은 객체를 가리키는가. 값 동등성 equality와 다르다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Equality</strong></td><td style="padding:9px;border:1px solid #fecdd3">도메인에서 두 key를 같은 것으로 볼지 결정하는 관계. 예: 같은 tenant와 user ID.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Equivalence relation</strong></td><td style="padding:9px;border:1px solid #fecdd3">reflexive·symmetric·transitive한 관계. map의 “동일 key”는 이 수학적 성질을 요구한다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Reflexive</strong></td><td style="padding:9px;border:1px solid #fecdd3"><code>a=a</code>. NaN의 원시 부동소수점 <code>==</code>처럼 이 성질이 없으면 별도 key 정책이 필요하다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Symmetric</strong></td><td style="padding:9px;border:1px solid #fecdd3"><code>a=b ⇒ b=a</code>. 서로 다른 타입을 비교할 때 한쪽만 true면 안 된다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Transitive</strong></td><td style="padding:9px;border:1px solid #fecdd3"><code>a=b ∧ b=c ⇒ a=c</code>. 근사 실수 비교가 흔히 깨뜨린다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Hash code</strong></td><td style="padding:9px;border:1px solid #fecdd3">key를 고정 폭 정수로 요약한 값. 먼저 후보 bucket을 고를 뿐 equality를 대체하지 않는다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Collision</strong></td><td style="padding:9px;border:1px solid #fecdd3">서로 다른 key가 같은 hash 또는 bucket에 도착하는 필연적 현상. correctness는 유지하되 비용이 늘 수 있다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Hash contract</strong></td><td style="padding:9px;border:1px solid #fecdd3">동등한 key는 반드시 같은 hash를 내야 한다는 단방향 의무. 같은 hash라고 같은 key일 필요는 없다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Canonicalization</strong></td><td style="padding:9px;border:1px solid #fecdd3">대소문자·Unicode·공백 등 허용한 여러 표현을 하나의 표준 표현으로 바꾸는 과정.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Mutable key</strong></td><td style="padding:9px;border:1px solid #fecdd3">삽입 뒤 equality/hash에 쓰는 필드가 바뀔 수 있는 key. 원래 bucket에 남아 lookup에서 사라진다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Hash flooding</strong></td><td style="padding:9px;border:1px solid #fecdd3">공격자가 충돌 key를 대량 주입해 hash table을 선형 구조로 퇴화시키는 algorithmic-complexity DoS.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Keyed hash</strong></td><td style="padding:9px;border:1px solid #fecdd3">process 비밀 seed를 포함해 공격자가 bucket을 예측하기 어렵게 하는 hash. MAC·암호화와 목적이 다르다.</td></tr>
+            <tr><td style="padding:9px;border:1px solid #fecdd3"><strong>Treeification</strong></td><td style="padding:9px;border:1px solid #fecdd3">긴 collision chain을 balanced tree로 바꿔 lookup 최악 비용을 O(log n)으로 제한하는 전략.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">2. Architecture / trust-boundary flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#be123c;color:white;border-radius:9px"><strong>① Untrusted input</strong></td><td style="padding:13px;background:#fff1f2">길이·개수·encoding·tenant 권한 검증</td></tr>
+            <tr><td align="center" colspan="2" style="color:#be123c;font-weight:800">↓ 동일성 정책을 먼저 확정</td></tr>
+            <tr><td style="padding:13px;background:#be123c;color:white;border-radius:9px"><strong>② Canonical key</strong></td><td style="padding:13px;background:#fff1f2">NFC/case 정책·typed field·immutable snapshot</td></tr>
+            <tr><td align="center" colspan="2" style="color:#be123c;font-weight:800">↓ equal과 hash가 정확히 같은 필드·규칙 사용</td></tr>
+            <tr><td style="padding:13px;background:#be123c;color:white;border-radius:9px"><strong>③ Keyed hash</strong></td><td style="padding:13px;background:#fff1f2">process secret + prefix-free field encoding</td></tr>
+            <tr><td align="center" colspan="2" style="color:#be123c;font-weight:800">↓ bucket/probe 후보에서 hash 확인 후 equality</td></tr>
+            <tr><td style="padding:13px;background:#be123c;color:white;border-radius:9px"><strong>④ Map operation</strong></td><td style="padding:13px;background:#fff1f2">get/put/delete, duplicate와 collision 분리</td></tr>
+            <tr><td align="center" colspan="2" style="color:#be123c;font-weight:800">↓ chain/probe budget·CPU deadline·cardinality metric</td></tr>
+            <tr><td style="padding:13px;background:#881337;color:white;border-radius:9px"><strong>⑤ Contain</strong></td><td style="padding:13px;background:#fff1f2">tree/fallback·reject·rate limit·alert·seed rotation 계획</td></tr>
+          </table>
+          <p><strong>순서가 중요하다:</strong> “case-insensitive key”를 원한다면 equality만 대소문자 무시로 바꾸는 것이 아니라 canonicalization과 hash 입력까지 같은 정책으로 묶어야 한다. 보안은 hash 함수 선택이 아니라 입력에서 fallback까지 이어지는 흐름이다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> 공개 HTTP endpoint가 <code>(tenant, external_user_id)</code>별 rate-limit state를 map에 저장한다. tenant는 ASCII lower-case, user ID는 Unicode NFC 후 case-sensitive다. 요청당 parameter 최대 100개, key 256 bytes, CPU budget 2ms다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ffe4e6"><th align="left" style="padding:8px;border:1px solid #fecdd3">질문</th><th align="left" style="padding:8px;border:1px solid #fecdd3">결정</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">업무상 같은 key란?</td><td style="padding:8px;border:1px solid #fecdd3">tenant lowercase + NFC user ID의 tuple equality</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">입력 표현이 여러 개인가?</td><td style="padding:8px;border:1px solid #fecdd3">ingress에서 한 번 canonicalize하고 immutable key 생성</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">공격자가 key를 고르는가?</td><td style="padding:8px;border:1px solid #fecdd3">예: keyed hash와 per-principal quota가 필수</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">hash를 저장·전송하는가?</td><td style="padding:8px;border:1px solid #fecdd3">아니오: runtime hash는 process seed·버전에 따라 달라질 수 있음</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">최악 비용 한도?</td><td style="padding:8px;border:1px solid #fecdd3">chain/probe max와 request CPU deadline에서 reject/fallback</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">정확한 중복 판정?</td><td style="padding:8px;border:1px solid #fecdd3">hash match 뒤 equality 필수; hash만으로 인증·동등성 판정 금지</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">4. Map ADT와 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>Map&lt;K,V&gt;</code>는 equality가 만든 key equivalence class마다 최대 하나의 value를 연결한다. object identity나 hash integer 자체가 key 의미를 결정하지 않는다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1 equivalence:</strong> equality는 reflexive·symmetric·transitive하고 map 안에 있는 동안 결과가 일관된다.</li>
+            <li><strong>RI-2 implication:</strong> <code>eq(a,b) ⇒ h(a)=h(b)</code>. 역은 요구하지 않는다.</li>
+            <li><strong>RI-3 stability:</strong> 삽입된 key의 equality/hash 관찰값은 제거될 때까지 변하지 않는다.</li>
+            <li><strong>RI-4 uniqueness:</strong> 같은 equivalence class의 live entry는 최대 하나다.</li>
+            <li><strong>RI-5 reachability:</strong> 저장 시 계산한 bucket/probe 경로와 조회 시 경로가 같아 해당 class에 도달한다.</li>
+            <li><strong>RI-6 field framing:</strong> composite key hash는 field type·length 또는 안전한 구분자를 포함해 tuple 경계를 보존한다.</li>
+            <li><strong>RI-7 secret scope:</strong> keyed hash seed는 map 수명 동안 안정적이고 외부에 노출·직렬화되지 않는다.</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>자주 틀리는 방향:</strong> 좋은 contract는 “hash가 같으면 equals”가 아니다. hash 출력은 유한하므로 서로 다른 무한/거대 key 공간에는 충돌이 반드시 있다. correctness는 collision 후보를 equality로 구분해 얻는다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">5. Lookup 정당성 증명과 최소 반례</h2>
+          <p><strong>정당성:</strong> key a를 삽입한 위치는 <code>bucket(h(a))</code>다. 조회 key b가 a와 동등하면 RI-2로 <code>h(a)=h(b)</code>, 따라서 같은 bucket/probe 후보를 방문한다. 그 후보에서 equality가 true이므로 value를 찾는다.</p>
+          <p><strong>최소 contract 반례:</strong> equality는 <code>(tenant,id)</code>만 비교하지만 hash는 <code>(tenant,id,displayName)</code>를 모두 사용한다고 하자. displayName만 다른 a,b는 equal인데 hash가 다르다. a를 넣고 b로 찾으면 다른 bucket을 보아 거짓 NOT_FOUND, b를 put하면 duplicate equivalence class가 생겨 RI-4가 깨진다.</p>
+          <p><strong>최소 mutable-key 반례:</strong> <code>id=7</code> 객체 reference를 bucket 7에 넣은 뒤 id를 8로 바꾼다. get은 bucket 8을 보지만 entry는 7에 남아 있다. 같은 객체인데도 사실상 잃어버린 entry가 되며 delete도 실패할 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">6. Equality가 equivalence relation이어야 하는 이유</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ffe4e6"><th style="padding:8px;border:1px solid #fecdd3">깨진 법칙</th><th style="padding:8px;border:1px solid #fecdd3">예</th><th style="padding:8px;border:1px solid #fecdd3">map에서 생기는 문제</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">reflexive</td><td style="padding:8px;border:1px solid #fecdd3">IEEE NaN: <code>x!=x</code></td><td style="padding:8px;border:1px solid #fecdd3">삽입한 key 자신을 못 찾거나 중복 정책 불명확</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">symmetric</td><td style="padding:8px;border:1px solid #fecdd3">Base는 Sub와 같지만 Sub는 Base와 다름</td><td style="padding:8px;border:1px solid #fecdd3">조회 방향에 따라 결과 변화</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">transitive</td><td style="padding:8px;border:1px solid #fecdd3"><code>|a-b|&lt;ε</code> 근사 equality</td><td style="padding:8px;border:1px solid #fecdd3">a=b, b=c인데 a≠c인 겹치는 class</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">consistent</td><td style="padding:8px;border:1px solid #fecdd3">현재 시간·DB 조회가 equality에 개입</td><td style="padding:8px;border:1px solid #fecdd3">같은 lookup이 매번 다른 결과</td></tr>
+          </table>
+          <p>Rust의 <code>Eq</code>는 reflexivity를 추가한 equivalence relation을 요구하며 <code>f32/f64</code>는 NaN 때문에 <code>Eq</code>를 구현하지 않는다. Java <code>Double.equals</code>는 raw <code>==</code> 대신 bit-based 규칙으로 NaN을 자기 자신과 동등하게 다뤄 Object equality 계약을 맞춘다. 언어마다 정책이 다르므로 “float를 key로 써도 되나?”보다 어떤 equivalence class를 원하는지 먼저 답한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">7. Canonicalization·Unicode·composite key</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Unicode:</strong> 화면상 같은 “é”가 precomposed U+00E9와 <code>e + U+0301</code>로 올 수 있다. 업무상 같다면 둘 다 NFC로 만든 뒤 equality/hash한다.</li>
+            <li><strong>Case:</strong> tenant만 case-insensitive라면 tenant에만 명시한 locale-independent 규칙을 적용한다. user ID까지 임의 lower-case하면 다른 계정을 합칠 수 있다.</li>
+            <li><strong>Tuple framing:</strong> 단순 byte 연결은 <code>("ab","c")</code>와 <code>("a","bc")</code>를 구분하지 못한다. type tag와 length-prefix를 hash stream에 넣는다.</li>
+            <li><strong>Version:</strong> canonicalization 규칙 변경은 key identity migration이다. 새 규칙을 조용히 배포하면 old/new key가 공존할 수 있어 schema version과 backfill이 필요하다.</li>
+            <li><strong>Cost:</strong> 매 lookup마다 normalize·allocate하지 말고 ingress에서 검증·정규화한 immutable key를 재사용한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">8. 직접 구현: equality와 hash의 단일 schema</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#4c0519;color:#fff1f2;padding:16px;border-radius:10px;font-size:13px"><code>typedef struct {
+  Bytes tenant_ascii_lower;  // ingress에서 canonicalized
+  Bytes user_id_nfc;         // immutable owned bytes
+} UserKey;
+
+bool user_key_equal(const UserKey *a, const UserKey *b) {
+  return bytes_equal(a-&gt;tenant_ascii_lower, b-&gt;tenant_ascii_lower) &amp;&amp;
+         bytes_equal(a-&gt;user_id_nfc, b-&gt;user_id_nfc);
+}
+
+uint64_t user_key_hash(const UserKey *k, Secret128 seed) {
+  SipState s = siphash_init(seed);     // process-local secret
+  siphash_u8(&amp;s, 1);                   // field type/domain tag
+  siphash_u64(&amp;s, k-&gt;tenant_ascii_lower.len);
+  siphash_bytes(&amp;s, k-&gt;tenant_ascii_lower);
+  siphash_u8(&amp;s, 2);
+  siphash_u64(&amp;s, k-&gt;user_id_nfc.len);
+  siphash_bytes(&amp;s, k-&gt;user_id_nfc);
+  return siphash_finish(&amp;s);
+}
+
+BuildResult build_user_key(Input in, UserKey *out) {
+  if (in.tenant_len &gt; 63 || in.user_len &gt; 256) return KEY_TOO_LONG;
+  if (!valid_utf8(in.user)) return INVALID_ENCODING;
+  return canonicalize_and_copy_immutably(in, out); // 실패 시 out 불변
+}</code></pre>
+          <p><strong>설계 포인트:</strong> display name·마지막 접속 시각처럼 identity가 아닌 mutable field는 두 함수에서 모두 제외한다. equality와 hash를 별도 팀이 손으로 중복 구현하지 말고 record/derive/schema-generated code와 property test로 drift를 막는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">9. Hash flooding의 비용 증명</h2>
+          <p>chaining table의 한 bucket에 n개가 모두 충돌하고 중복 검사를 위해 기존 chain을 순회하면 i번째 insert는 i−1회 equality를 수행한다. 총 비교는 <code>0+1+…+(n−1)=n(n−1)/2=Θ(n²)</code>. 이후 hit/miss lookup도 Θ(n)이다.</p>
+          <p>open addressing도 모든 key가 같은 probe 시작·경로를 공유하면 cluster가 길어져 같은 최악 차수로 악화될 수 있다. load factor를 낮추거나 resize해도 공격 hash가 계속 같은 bucket/probe를 만들면 근본 해결이 아니다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>공격 mental model:</strong> 공격자는 서버 binary를 깨지 않아도 된다. 공개되거나 추론 가능한 hash에 맞춘 작은 key 집합을 반복 전송해 네트워크 bandwidth보다 훨씬 큰 CPU 작업을 유발한다. 이것이 algorithmic-complexity amplification이다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">10. Defense-in-depth decision table</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#ffe4e6"><th style="padding:7px;border:1px solid #fecdd3">방어</th><th style="padding:7px;border:1px solid #fecdd3">막는 것</th><th style="padding:7px;border:1px solid #fecdd3">한계·비용</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">Keyed hash / random seed</td><td style="padding:7px;border:1px solid #fecdd3">사전 계산한 collision 재사용</td><td style="padding:7px;border:1px solid #fecdd3">seed 유출·adaptive attack·hash CPU; MAC은 아님</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">Treeification</td><td style="padding:7px;border:1px solid #fecdd3">긴 bucket의 O(n) lookup</td><td style="padding:7px;border:1px solid #fecdd3">ordering/tie-breaker·node memory·locality 비용</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">Collision/probe budget</td><td style="padding:7px;border:1px solid #fecdd3">무제한 CPU 증폭</td><td style="padding:7px;border:1px solid #fecdd3">정상 hot-key burst 오탐; fallback 필요</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">Request key-count/byte limit</td><td style="padding:7px;border:1px solid #fecdd3">한 요청의 공격량</td><td style="padding:7px;border:1px solid #fecdd3">분산 요청은 principal/global rate limit 필요</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">Deadline/admission control</td><td style="padding:7px;border:1px solid #fecdd3">queue·CPU 붕괴 전파</td><td style="padding:7px;border:1px solid #fecdd3">일부 요청 실패를 API로 처리해야 함</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">Monitoring + seed rotation</td><td style="padding:7px;border:1px solid #fecdd3">이상 탐지·노출 복구</td><td style="padding:7px;border:1px solid #fecdd3">rehash 비용·persisted hash 금지</td></tr>
+          </table>
+          <p>OpenJDK HashMap은 긴 bin을 tree로 바꾸는 threshold와 작은 table에서는 먼저 resize하는 최소 capacity를 둔다. Python은 str/bytes hash에 process마다 예측하기 어려운 salt를 사용하며 PEP 456은 SipHash를 hash-flooding 방어용 기본 설계로 채택했다. 어느 하나도 request quota와 resource deadline을 대체하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">11. Benchmark: 평균 입력만 재면 공격을 못 본다</h2>
+          <p><strong>환경:</strong> Apple clang 21.0.0 <code>-O3</code>, arm64 macOS 26.5.2, bucket 65,536개 chaining map, unique 64-bit key 20,000개, warm-up 후 5회 중앙값. 공개 hash는 low bits, 공격 key는 <code>i×65,536</code>이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#ffe4e6"><th style="padding:7px;border:1px solid #fecdd3">입력·hash</th><th style="padding:7px;border:1px solid #fecdd3">insert ms</th><th style="padding:7px;border:1px solid #fecdd3">max chain</th><th style="padding:7px;border:1px solid #fecdd3">equality checks</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">sequential·public</td><td align="center" style="padding:7px;border:1px solid #fecdd3">0.039</td><td align="center" style="padding:7px;border:1px solid #fecdd3">1</td><td align="center" style="padding:7px;border:1px solid #fecdd3">0</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">crafted stride·public</td><td align="center" style="padding:7px;border:1px solid #fecdd3">395.929</td><td align="center" style="padding:7px;border:1px solid #fecdd3">20,000</td><td align="center" style="padding:7px;border:1px solid #fecdd3">199,990,000</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecdd3">same stride·seeded demo</td><td align="center" style="padding:7px;border:1px solid #fecdd3">0.072</td><td align="center" style="padding:7px;border:1px solid #fecdd3">4</td><td align="center" style="padding:7px;border:1px solid #fecdd3">3,085</td></tr>
+          </table>
+          <p><strong>해석:</strong> 같은 n·capacity인데 공개 low-bit hash의 공격 입력은 정상 입력보다 약 10,000배 느렸다. seed가 있는 데모 mixer는 이 미리 만든 입력을 분산했지만 cryptographic PRF가 아니므로 production 방어로 그대로 쓰면 안 된다. 공식 keyed hash 구현과 입력 예산을 사용한다.</p>
+          <p><strong>benchmark 주의:</strong> 랜덤 key 평균만 측정하지 말고 same-hash·same-bucket·common-prefix·긴 key·중복 key·miss를 분리한다. equality 호출 수, max chain/probe, hash byte/s, allocation, p99/max, request 전체 CPU를 기록한다. seed를 고정한 재현 실험과 매-run random seed의 robustness 실험을 둘 다 둔다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">12. Memory·locality·production trade-off</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Keyed hash:</strong> 단순 정수 hash보다 CPU가 들지만 collision chain의 pointer chase·branch·equality 폭증을 예방한다. 짧은 untrusted string에서는 안전 비용을 request budget으로 본다.</li>
+            <li><strong>Cached hash:</strong> 긴 immutable key의 재hash를 줄이지만 entry당 bytes가 늘고 seed rotation·serialization과 결합하면 위험하다.</li>
+            <li><strong>Tree bin:</strong> worst bound는 좋아지지만 node pointer·color·parent 정보로 memory와 cache locality가 나빠진다.</li>
+            <li><strong>Canonical bytes:</strong> normalize 결과를 소유하면 비교가 빨라지지만 원본+정규화본 peak memory가 든다. size limit와 interning 정책이 필요하다.</li>
+            <li><strong>Seed scope:</strong> process별 seed는 반복 실행 iteration order를 바꿀 수 있다. deterministic test·wire format·persistent index에 runtime hash/order를 의존하지 않는다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">13. 테스트: example보다 law와 adversary</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Equality law:</strong> 생성 가능한 key에 reflexive·symmetric·transitive property test를 건다.</li>
+            <li><strong>Contract:</strong> 모든 sampled a,b에 <code>eq(a,b)</code>이면 같은 seed의 hash가 같은지 검사한다.</li>
+            <li><strong>Field drift:</strong> identity field 하나씩 바꾸면 equality/hash가 함께 반응하고 비identity field 변경에는 둘 다 반응하지 않는지 본다.</li>
+            <li><strong>Canonical pair:</strong> Unicode composed/decomposed, tenant 대소문자, 경계 length tuple이 의도한 equivalence class를 만드는지 확인한다.</li>
+            <li><strong>Mutation:</strong> API가 key를 복사하거나 immutable type만 받는지, 외부 buffer 변경 뒤에도 lookup이 안전한지 테스트한다.</li>
+            <li><strong>Adversarial:</strong> known collision corpus와 generated same-bucket 입력에서 max chain/probe·CPU budget·fallback을 검증한다.</li>
+            <li><strong>Seed:</strong> 같은 process에서는 안정적이고 다른 seed에서는 분포가 달라지며 secret이 log/core/metric label에 노출되지 않는지 점검한다.</li>
+          </ol>
+          <p><strong>이번 검증:</strong> C11 chaining 구현은 size·chain reachability를 검사했고 Apple clang 21.0.0 <code>-Wall -Wextra -Werror</code> 및 ASan/UBSan에서 정상·공격·seeded-demo 입력을 각각 5회 통과했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">14. Error handling과 실무 best practice</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#ffe4e6"><th align="left" style="padding:8px;border:1px solid #fecdd3">상황</th><th align="left" style="padding:8px;border:1px solid #fecdd3">안전한 처리</th><th align="left" style="padding:8px;border:1px solid #fecdd3">Anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">invalid UTF-8/too long</td><td style="padding:8px;border:1px solid #fecdd3">map 전 reject, typed error·metric</td><td style="padding:8px;border:1px solid #fecdd3">normalize 중 무제한 allocation</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">canonicalize OOM</td><td style="padding:8px;border:1px solid #fecdd3">map 미변경, retryable/resource error</td><td style="padding:8px;border:1px solid #fecdd3">부분 key를 삽입</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">seed 초기화 실패</td><td style="padding:8px;border:1px solid #fecdd3">fail closed 또는 안전한 runtime provider</td><td style="padding:8px;border:1px solid #fecdd3">상수 0 seed로 조용히 fallback</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">collision budget 초과</td><td style="padding:8px;border:1px solid #fecdd3">tree/fallback/reject + principal rate limit</td><td style="padding:8px;border:1px solid #fecdd3">resize만 반복</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">mutable key 요구</td><td style="padding:8px;border:1px solid #fecdd3">remove→mutate→reinsert 또는 immutable ID key</td><td style="padding:8px;border:1px solid #fecdd3">map 안에서 identity field 변경</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecdd3">cross-version persistence</td><td style="padding:8px;border:1px solid #fecdd3">원본 canonical key와 명시 schema 저장</td><td style="padding:8px;border:1px solid #fecdd3">runtime hash integer를 영구 ID로 사용</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">15. 35분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>8분:</strong> 업무 key의 equality field와 제외 field를 표로 정의한다.</li>
+            <li><strong>7분:</strong> type tag+length-prefix composite hash와 equality를 같은 schema에서 구현한다.</li>
+            <li><strong>7분:</strong> equality law와 <code>eq⇒same hash</code> property test를 작성한다.</li>
+            <li><strong>8분:</strong> public-hash collision corpus의 equality count·max chain·latency를 측정한다.</li>
+            <li><strong>5분:</strong> keyed hash, budget, quota, fallback, seed rotation을 threat-model ADR에 적는다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ffe4e6;border-radius:10px"><strong>Q1. equals를 override하면 왜 hashCode도 바꿔야 하나요?</strong><br>equal key가 다른 hash면 다른 bucket을 방문해 거짓 miss·duplicate가 생긴다. 단방향 <code>equal⇒same hash</code>, collision 시 equality 필요, 최소 tenant/id/displayName 반례로 정당성을 설명한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ffe4e6;border-radius:10px"><strong>Q2. mutable object를 hash key로 쓰면 무슨 일이 생기나요?</strong><br>hash/equality field 변경 뒤 entry는 old bucket에 남고 lookup은 new bucket을 본다. immutable snapshot, stable ID, remove-mutate-reinsert, API ownership 계약을 제시한다.</div>
+          <div style="padding:16px;background:#ffe4e6;border-radius:10px"><strong>Q3. hash collision DoS를 어떻게 방어하나요?</strong><br>n개 충돌 insert의 Θ(n²) 증명 후 keyed hash로 예측을 어렵게 하고 tree/fallback으로 worst를 제한하며 key-count/bytes·rate limit·deadline·collision metric으로 자원을 격리한다. resize만으로 해결되지 않음을 강조한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>equal key가 같은 hash여야 하는 이유를 lookup proof로 설명하라.</li>
+            <li>같은 hash인 두 key는 반드시 equal인가?</li>
+            <li>근사 실수 equality가 transitivity를 깨는 세 값 예를 만들어라.</li>
+            <li>tuple field를 구분 없이 이어 hash하면 생기는 최소 반례는?</li>
+            <li>collision key n개 insert가 Θ(n²)인 합은?</li>
+            <li>Day 17에서 tombstone cleanup을 해도 hash flooding이 다시 생기는 이유는?</li>
+            <li>Day 18의 resize가 collision attack의 근본 방어가 아닌 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) 같은 bucket/probe를 방문해야 equality 후보에 도달. 2) 아니다, collision. 3) 0, 0.9ε, 1.8ε. 4) (ab,c)/(a,bc). 5) n(n−1)/2. 6) 공격 hash는 cleanup 후에도 같은 경로. 7) capacity가 커져도 예측 collision이면 한 bucket/sequence에 모임.</div>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">18. 다음 날 연결</h2>
+          <p>Day 20은 <strong>랩: hash map 구현·분포·실패 입력</strong>이다. 오늘까지의 equality/hash, chaining/open addressing, probing/tombstone, resize를 하나의 구현에 통합하고 reference model·property test·fault injection·분포 benchmark로 검증한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#be123c">출처 · 공식 문서와 1차 연구</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://doc.rust-lang.org/stable/std/collections/struct.HashMap.html" style="color:#be123c">Rust Standard Library — HashMap</a>: <code>k1==k2 ⇒ hash(k1)==hash(k2)</code>, mutable key의 logic error, SwissTable·random seeding.</li>
+            <li><a href="https://doc.rust-lang.org/std/cmp/trait.Eq.html" style="color:#be123c">Rust Standard Library — Eq</a>: equivalence relation과 reflexivity, NaN 때문에 float가 Eq를 구현하지 않는 이유.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html" style="color:#be123c">Java SE 26 — Object</a>: equals의 reflexive/symmetric/transitive/consistent 계약과 equal object의 hashCode 의무.</li>
+            <li><a href="https://docs.python.org/3/reference/datamodel.html#object.__hash__" style="color:#be123c">Python 3 Data Model — __hash__</a>: mutable equality object의 unhashable 정책, str/bytes salt와 collision DoS 방어.</li>
+            <li><a href="https://peps.python.org/pep-0456/" style="color:#be123c">PEP 456 — Secure and interchangeable hash algorithm</a>: SipHash 도입 근거, hash-flooding 위협과 대안 방어.</li>
+            <li><a href="https://eel.is/c%2B%2Bdraft/unord.req.general" style="color:#be123c">C++ Working Draft — Unordered requirements</a>: equivalent-key predicate와 same-hash·stability 요구, average/worst 경계.</li>
+            <li><a href="https://www.usenix.org/conference/12th-usenix-security-symposium/denial-service-algorithmic-complexity-attacks" style="color:#be123c">Crosby &amp; Wallach, USENIX Security 2003</a>: 예측 가능한 collision을 이용한 저대역폭 algorithmic-complexity DoS 실증.</li>
+            <li><a href="https://www.unicode.org/reports/tr15/" style="color:#be123c">Unicode Standard Annex #15</a>: canonical equivalence와 normalization의 unique representation.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·검증: 2026-08-20 Asia/Seoul · 공식 문서·표준·1차 연구를 확인했으며 seeded benchmark mixer는 교육용이며 production cryptographic hash가 아니다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
