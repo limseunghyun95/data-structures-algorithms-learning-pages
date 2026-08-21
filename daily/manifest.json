@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-20T09:19:11+09:00",
+  "updatedAt": "2026-08-21T09:10:47+09:00",
   "lessons": [
     {
       "day": 1,
@@ -176,6 +176,15 @@
       "path": "day-19.html",
       "kind": "lesson",
       "publishedAt": "2026-08-20T09:19:11+09:00"
+    },
+    {
+      "day": 20,
+      "week": 3,
+      "title": "랩: hash map 구현·분포·실패 입력",
+      "summary": "open addressing map을 구현해 RI·정당성·failure atomicity를 검증하고 differential test, allocation fault, sanitizer, 분포·tombstone benchmark까지 통합합니다.",
+      "path": "day-20.html",
+      "kind": "lab",
+      "publishedAt": "2026-08-21T09:10:47+09:00"
     }
   ]
 }

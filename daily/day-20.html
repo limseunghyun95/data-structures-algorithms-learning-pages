@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 20 · 랩: hash map 구현·분포·실패 입력</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#065f46;color:#ecfdf5">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 3 / DAY 20 · INTEGRATION LAB</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">“동작한다”를 넘어<br>깨져도 계약을 지키는 Hash Map</h1>
+          <p style="margin:0;color:#a7f3d0">ADT → invariant → differential test → fault injection → distribution benchmark · 150분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #059669;background:#d1fae5;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            production hash map은 평균 O(1)이라는 문장이 아니라 <strong>도달 가능성·유일성·failure atomicity</strong>를 검사하는 구현, reference model과 실패 주입 테스트, 실제 key 분포와 tombstone debt를 드러내는 probe 지표까지 합친 시스템이다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>ADT</strong></td><td style="padding:8px;border:1px solid #a7f3d0">자료의 사용 계약. Map은 key별 value를 put/get/delete하며 내부 배열 방식은 감춘다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Representation invariant(RI)</strong></td><td style="padding:8px;border:1px solid #a7f3d0">모든 공개 연산 전후에 내부 상태가 반드시 만족해야 하는 명제.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Open addressing</strong></td><td style="padding:8px;border:1px solid #a7f3d0">entry를 별도 node가 아니라 table slot 안에 저장하고 충돌 시 다른 slot을 탐사하는 표현.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Probe</strong></td><td style="padding:8px;border:1px solid #a7f3d0">원하는 key를 찾기 위해 slot을 한 번 확인하는 일. probe 수는 cache·branch 비용의 좋은 대리 지표다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Tombstone</strong></td><td style="padding:8px;border:1px solid #a7f3d0">삭제된 자리를 나타내는 DELETED 표식. 탐사 경로는 유지하지만 누적되면 miss가 느려진다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Live/used load factor</strong></td><td style="padding:8px;border:1px solid #a7f3d0"><code>size/capacity</code>와 <code>(FULL+DELETED)/capacity</code>. 공간과 탐사 압력을 서로 다르게 보여준다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Oracle / reference model</strong></td><td style="padding:8px;border:1px solid #a7f3d0">결과 비교의 기준이 되는 단순하고 신뢰하기 쉬운 구현. 이 랩은 작은 선형 map을 쓴다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Differential testing</strong></td><td style="padding:8px;border:1px solid #a7f3d0">같은 연산열을 시험 대상과 oracle에 실행해 모든 관찰 결과를 비교하는 테스트.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Property test</strong></td><td style="padding:8px;border:1px solid #a7f3d0">몇 개 예제 대신 광범위한 입력에서 법칙·불변식이 계속 성립하는지 검사하는 방식.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Seed</strong></td><td style="padding:8px;border:1px solid #a7f3d0">난수 연산열을 재현하는 시작값. 실패 로그에 남기되 보안용 hash secret과 혼동하지 않는다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Fault injection</strong></td><td style="padding:8px;border:1px solid #a7f3d0">OOM·I/O 실패처럼 드문 실패를 의도적으로 발생시켜 error path를 검증하는 기법.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Failure atomicity</strong></td><td style="padding:8px;border:1px solid #a7f3d0">연산이 실패하면 호출 전 상태가 그대로 보존되는 성질. “성공 아니면 무변경”이다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Sanitizer</strong></td><td style="padding:8px;border:1px solid #a7f3d0">실행 중 out-of-bounds, use-after-free, undefined behavior 등을 잡는 계측 도구.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Corpus</strong></td><td style="padding:8px;border:1px solid #a7f3d0">실제 traffic이나 장애에서 모은 대표·적대 입력 모음. 균등 난수만으로 놓치는 분포를 보존한다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">2. Architecture / verification flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:32%;padding:13px;background:#047857;color:white;border-radius:9px"><strong>① Contract</strong></td><td style="padding:13px;background:#ecfdf5">동일성·ownership·OOM·iterator 정책을 먼저 고정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 계약을 기계적으로 확인할 RI로 번역</td></tr>
+            <tr><td style="padding:13px;background:#047857;color:white;border-radius:9px"><strong>② Implementation</strong></td><td style="padding:13px;background:#ecfdf5">EMPTY/FULL/DELETED + finite linear probe + rehash</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 같은 연산열·각 단계의 관찰 결과 비교</td></tr>
+            <tr><td style="padding:13px;background:#047857;color:white;border-radius:9px"><strong>③ Oracle + RI</strong></td><td style="padding:13px;background:#ecfdf5">random operation sequence, uniqueness·reachability 검사</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 정상 결과만 아니라 실패 직전·직후 snapshot 비교</td></tr>
+            <tr><td style="padding:13px;background:#047857;color:white;border-radius:9px"><strong>④ Fault + Sanitizer</strong></td><td style="padding:13px;background:#ecfdf5">allocation N번째 실패, ASan/UBSan, leak/lifetime 확인</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 실제·적대 분포에서 시간과 원인 지표 동시 측정</td></tr>
+            <tr><td style="padding:13px;background:#064e3b;color:white;border-radius:9px"><strong>⑤ Benchmark gate</strong></td><td style="padding:13px;background:#ecfdf5">probe histogram·p99·tombstone debt·memory budget</td></tr>
+          </table>
+          <p><strong>핵심:</strong> benchmark가 빠르다고 정답은 아니고, test가 통과한다고 운영 분포에서 빠른 것도 아니다. contract → proof/test → fault → measurement가 하나의 release pipeline이어야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>과제:</strong> 64-bit key/value를 저장하는 single-threaded open-addressing map을 C11로 구현한다. key는 모든 <code>uint64_t</code>를 허용하므로 sentinel key를 예약하지 않고 slot state를 별도로 둔다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th align="left" style="padding:8px;border:1px solid #a7f3d0">입력·사건</th><th align="left" style="padding:8px;border:1px solid #a7f3d0">정확한 계약</th><th align="left" style="padding:8px;border:1px solid #a7f3d0">관찰값</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><code>put(k,v)</code></td><td style="padding:8px;border:1px solid #a7f3d0">신규 삽입 또는 기존 value 교체</td><td style="padding:8px;border:1px solid #a7f3d0">insert/update/OOM 구분</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><code>get(k)</code></td><td style="padding:8px;border:1px solid #a7f3d0">FULL key만 hit, 첫 EMPTY에서 miss</td><td style="padding:8px;border:1px solid #a7f3d0">found/value/probes</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><code>delete(k)</code></td><td style="padding:8px;border:1px solid #a7f3d0">FULL→DELETED, 뒤 cluster 보존</td><td style="padding:8px;border:1px solid #a7f3d0">deleted/not-found</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">resize OOM</td><td style="padding:8px;border:1px solid #a7f3d0">원 table·size·capacity·bytes 불변</td><td style="padding:8px;border:1px solid #a7f3d0">explicit OOM</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">capacity slots 모두 used</td><td style="padding:8px;border:1px solid #a7f3d0">최대 capacity번만 probe</td><td style="padding:8px;border:1px solid #a7f3d0">full/error, 무한 loop 금지</td></tr>
+          </table>
+          <p><strong>제약을 먼저 묻자:</strong> 동시 접근인가, key/value ownership은 누구에게 있는가, 실패 시 retry가 안전한가, iterator 순서가 API인가, 최대 resident memory와 p99 latency budget은 얼마인가? 이 답이 달라지면 같은 “hash map”도 다른 설계다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">4. ADT와 representation invariant</h2>
+          <p><strong>Map ADT:</strong> 각 key에는 최대 한 value가 대응하며 put은 그 대응을 만들거나 갱신하고, get은 현재 대응을 관찰하며, delete는 대응을 제거한다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1 shape:</strong> <code>capacity ≥ 8</code>, 2의 거듭제곱이며 <code>slots != NULL</code>.</li>
+            <li><strong>RI-2 counts:</strong> <code>size = #FULL</code>, <code>used = #FULL + #DELETED</code>, <code>size ≤ used ≤ capacity</code>.</li>
+            <li><strong>RI-3 uniqueness:</strong> 같은 key를 가진 FULL slot은 최대 하나다.</li>
+            <li><strong>RI-4 reachability:</strong> 모든 FULL key는 자기 home slot부터 탐사할 때 먼저 만나는 EMPTY 이전에 도달한다.</li>
+            <li><strong>RI-5 deletion:</strong> delete는 중간 slot을 EMPTY로 만들지 않는다. 그렇지 않으면 뒤 key가 거짓 miss가 된다.</li>
+            <li><strong>RI-6 insertion:</strong> 검색 중 첫 DELETED를 기억하되 동일 key가 뒤에 있는지 EMPTY까지 확인한 후 재사용한다.</li>
+            <li><strong>RI-7 bounded progress:</strong> 모든 탐사는 최대 <code>capacity</code>개 slot 뒤 종료한다.</li>
+            <li><strong>RI-8 failure atomicity:</strong> 재할당·rehash가 실패하면 기존 table의 모든 observable byte와 ADT mapping이 그대로다.</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>왜 first tombstone에서 바로 insert하면 안 될까?</strong> 그 뒤 probe 경로에 같은 key가 있을 수 있다. 즉시 삽입하면 중복 FULL entry가 생긴다. 첫 DELETED 위치는 “후보”로만 저장하고 EMPTY 또는 기존 key를 만날 때까지 계속 탐사한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">5. 정당성 증명과 최소 반례</h2>
+          <p><strong>get의 정당성:</strong> key가 존재하면 RI-4에 의해 home에서 그 key까지 EMPTY가 없다. get은 같은 hash와 probe 순서를 쓰므로 key에 도달해 반환한다. 반대로 EMPTY를 먼저 만났다면 그 자리는 해당 경로에서 한 번도 점유되지 않았으므로 key가 이후에 존재할 수 없다. capacity번 모두 보아도 없으면 miss다.</p>
+          <p><strong>delete의 정당성:</strong> 찾은 FULL만 DELETED로 바꾸면 삭제 key의 대응은 사라진다. DELETED는 탐사를 중단시키지 않으므로 뒤 key의 reachability는 보존된다. <code>size--</code>, <code>used</code> 유지로 RI-2도 성립한다.</p>
+          <p><strong>rehash의 정당성:</strong> 새 빈 table에 모든 old FULL entry를 같은 Map put 의미로 정확히 한 번 삽입하면 mapping·유일성이 보존된다. 전부 성공한 뒤 pointer를 swap하므로 중간 OOM은 old table을 관찰 가능하게 바꾸지 않는다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">최소 반례</th><th style="padding:8px;border:1px solid #a7f3d0">깨지는 성질</th><th style="padding:8px;border:1px solid #a7f3d0">수정</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">cluster A,B 중 A 삭제를 EMPTY 처리</td><td style="padding:8px;border:1px solid #a7f3d0">B lookup 거짓 miss</td><td style="padding:8px;border:1px solid #a7f3d0">DELETED 또는 backward-shift proof</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">첫 DELETED에 즉시 duplicate key 삽입</td><td style="padding:8px;border:1px solid #a7f3d0">key 유일성</td><td style="padding:8px;border:1px solid #a7f3d0">probe 끝까지 equality 확인</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">old slot을 옮기며 바로 EMPTY 처리 후 OOM</td><td style="padding:8px;border:1px solid #a7f3d0">mapping 유실</td><td style="padding:8px;border:1px solid #a7f3d0">새 table 완성 후 commit</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">EMPTY가 없는데 무한 <code>for(;;)</code></td><td style="padding:8px;border:1px solid #a7f3d0">termination</td><td style="padding:8px;border:1px solid #a7f3d0">capacity probe budget</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">6. 직접 구현: 탐사와 two-phase rehash</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#022c22;color:#ecfdf5;padding:16px;border-radius:10px;font-size:13px"><code>typedef enum { EMPTY, FULL, DELETED } State;
+typedef struct { uint64_t key, value; State state; } Slot;
+typedef struct { Slot *slots; size_t capacity, size, used; } Map;
+
+Locate locate(const Map *m, uint64_t key) {
+  size_t mask = m-&gt;capacity - 1;
+  size_t first_deleted = SIZE_MAX;
+  for (size_t step = 0; step &lt; m-&gt;capacity; step++) {
+    size_t i = (mix64(key) + step) &amp; mask;
+    Slot *s = &amp;m-&gt;slots[i];
+    if (s-&gt;state == FULL &amp;&amp; s-&gt;key == key) return found(i);
+    if (s-&gt;state == DELETED &amp;&amp; first_deleted == SIZE_MAX)
+      first_deleted = i;              // 후보만 기억
+    if (s-&gt;state == EMPTY)
+      return absent(first_deleted == SIZE_MAX ? i : first_deleted);
+  }
+  return absent(first_deleted);       // finite probe; SIZE_MAX면 정말 full
+}
+
+Status rehash(Map *m, size_t new_capacity) {
+  Map candidate;
+  if (!map_init(&amp;candidate, new_capacity)) return OOM;
+  for (size_t i = 0; i &lt; m-&gt;capacity; i++) {
+    if (m-&gt;slots[i].state == FULL)
+      put_without_resize(&amp;candidate, m-&gt;slots[i].key, m-&gt;slots[i].value);
+  }
+  Map old = *m;
+  *m = candidate;                     // commit point
+  map_destroy(&amp;old);
+  return OK;
+}</code></pre>
+          <p><strong>실제 랩 구현:</strong> 별도 allocation hook으로 N번째 allocation을 실패시키고, resize 직전 table bytes를 snapshot해 OOM 뒤 <code>capacity/size/used/slots</code>가 정확히 같은지 비교했다. 단순히 “기존 key가 몇 개 조회된다”만 확인하면 metadata 손상은 놓칠 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">7. 테스트 설계: 예제에서 상태 공간으로</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Unit:</strong> empty miss, insert, update, delete, duplicate, zero/max key, wrap-around cluster.</li>
+            <li><strong>Minimal regression:</strong> 버그 하나마다 가장 작은 연산열과 seed를 고정한다.</li>
+            <li><strong>Differential:</strong> 512-key domain에서 put/get/delete 320만 회를 32 seeds로 생성하고 선형 oracle과 매 결과·전체 mapping을 비교한다.</li>
+            <li><strong>RI checker:</strong> count, uniqueness, probe reachability를 실행 중 주기적으로 전수 검사한다.</li>
+            <li><strong>Fault injection:</strong> grow allocation을 정확히 실패시키고 OOM 반환과 byte-for-byte 무변경을 검사한다.</li>
+            <li><strong>Sanitizer:</strong> ASan으로 out-of-bounds/use-after-free, UBSan으로 정수·shift 등 undefined behavior를 검사한다.</li>
+            <li><strong>Distribution:</strong> uniform, stride/same-bucket, duplicate-heavy, delete churn, miss-heavy corpus를 각각 측정한다.</li>
+          </ol>
+          <p><strong>재현 로그:</strong> 실패 시 seed, operation index, key/value, capacity, size/used, probe trace를 남긴다. 보안 hash의 비밀 seed 자체는 log에 남기지 말고 테스트 전용 결정적 hasher를 주입한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">8. 이번 실행 결과</h2>
+          <p>Apple clang 21.0.0, C11, <code>-O3 -Wall -Wextra -Werror</code>. 시간은 동일 실행 파일을 5회 측정한 median이며, probe 값은 20,000개 key의 정확한 count다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">분포</th><th style="padding:7px;border:1px solid #a7f3d0">insert median</th><th style="padding:7px;border:1px solid #a7f3d0">avg hit probe</th><th style="padding:7px;border:1px solid #a7f3d0">max</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">uniform + mixed hash</td><td style="padding:7px;border:1px solid #a7f3d0">0.340 ms</td><td style="padding:7px;border:1px solid #a7f3d0">1.777</td><td style="padding:7px;border:1px solid #a7f3d0">52</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">stride + identity hash</td><td style="padding:7px;border:1px solid #a7f3d0">135.995 ms</td><td style="padding:7px;border:1px solid #a7f3d0">10,000.500</td><td style="padding:7px;border:1px solid #a7f3d0">20,000</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">같은 stride + mixed hash</td><td style="padding:7px;border:1px solid #a7f3d0">0.273 ms</td><td style="padding:7px;border:1px solid #a7f3d0">1.829</td><td style="padding:7px;border:1px solid #a7f3d0">31</td></tr>
+          </table>
+          <p><strong>해석:</strong> capacity 32,768에서 <code>key=i×capacity</code>와 identity hash를 쓰면 모든 key의 home slot이 0이다. i번째 key는 평균적으로 앞의 cluster를 훑으므로 평균 hit probe는 (1+20,000)/2=10,000.5, insert 총 probe는 Θ(n²)이다. mixer는 이 corpus를 분산했지만 교육용 mixer가 공격 방어를 보장한다는 뜻은 아니다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th align="left" style="padding:8px;border:1px solid #a7f3d0">검증</th><th align="left" style="padding:8px;border:1px solid #a7f3d0">결과</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">32 seeds × 100,000 ops differential</td><td style="padding:8px;border:1px solid #a7f3d0"><strong>PASS</strong></td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">grow allocation OOM, exact state unchanged</td><td style="padding:8px;border:1px solid #a7f3d0"><strong>PASS</strong></td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">ASan + UBSan full suite</td><td style="padding:8px;border:1px solid #a7f3d0"><strong>PASS</strong></td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">delete churn: 45,000 live + 45,000 tombstones</td><td style="padding:8px;border:1px solid #a7f3d0">avg miss probe 5.596 → cleanup 후 1.671</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">9. Complexity: expected·worst·amortized를 분리하라</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">연산</th><th style="padding:8px;border:1px solid #a7f3d0">좋은 분포·α 제한</th><th style="padding:8px;border:1px solid #a7f3d0">단일 최악</th><th style="padding:8px;border:1px solid #a7f3d0">공간</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">get/delete</td><td style="padding:8px;border:1px solid #a7f3d0">expected O(1)</td><td style="padding:8px;border:1px solid #a7f3d0">O(n)</td><td style="padding:8px;border:1px solid #a7f3d0">O(1)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">put without resize</td><td style="padding:8px;border:1px solid #a7f3d0">expected O(1)</td><td style="padding:8px;border:1px solid #a7f3d0">O(n)</td><td style="padding:8px;border:1px solid #a7f3d0">O(1)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">one resize</td><td style="padding:8px;border:1px solid #a7f3d0">O(n)</td><td style="padding:8px;border:1px solid #a7f3d0">O(n²), 분포 악화 시</td><td style="padding:8px;border:1px solid #a7f3d0">peak O(n)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">put sequence</td><td style="padding:8px;border:1px solid #a7f3d0">amortized expected O(1)</td><td style="padding:8px;border:1px solid #a7f3d0">공격 입력은 보장 안 됨</td><td style="padding:8px;border:1px solid #a7f3d0">O(capacity)</td></tr>
+          </table>
+          <p>geometric growth에서 entry는 capacity가 8,16,32…일 때 다시 이동한다. n개까지 총 이동은 <code>8+16+…+n &lt; 2n</code>이므로 좋은 hash 분포 아래 resize 이동의 총 expected cost는 O(n), put당 amortized expected O(1)이다. <strong>amortized는 확률이 아니고 expected는 worst bound가 아니다.</strong></p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">10. Memory·locality·production trade-off</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Flat slots:</strong> 연속 배열은 chaining node보다 pointer chase와 allocation이 적어 cache locality가 좋다. 대신 낮은 α를 유지하는 빈 slot memory가 필요하다.</li>
+            <li><strong>State layout:</strong> 이 교육 구현은 slot마다 enum padding을 낭비한다. production Swiss table 계열은 control bytes를 별도로 묶고 SIMD로 후보를 여럿 검사한다.</li>
+            <li><strong>Tombstone debt:</strong> live α가 낮아도 used α가 높으면 miss가 길다. 둘을 따로 metric으로 내고 same-capacity rehash 조건을 둔다.</li>
+            <li><strong>Stop-the-world resize:</strong> 구현은 단순하지만 한 요청이 O(n) migration과 약 2배 peak memory를 부담한다. 큰 table은 incremental rehash나 shard를 검토한다.</li>
+            <li><strong>Pointer stability:</strong> resize는 slot 주소를 바꾼다. 내부 value pointer를 외부에 장기 대여하지 않거나 stable indirection을 명시한다.</li>
+            <li><strong>Concurrency:</strong> 이 map은 thread-safe가 아니다. mutex를 둘러도 iterator·rehash·callback 재진입 계약까지 설계해야 한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">11. Benchmark를 믿기 전에</h2>
+          <ul style="padding-left:22px">
+            <li>compiler·flags·CPU·capacity·key corpus·seed·warm-up·반복 횟수를 기록한다.</li>
+            <li>wall time 하나만 보지 말고 avg/max/p50/p99 probe, equality count, resize count, bytes, allocation을 함께 본다.</li>
+            <li>insert와 lookup을 섞으면 resize가 어느 구간에 들어갔는지 숨는다. steady-state와 lifecycle을 분리한다.</li>
+            <li>benchmark 자체의 hash/key 생성 비용이 측정 구간에 섞이지 않게 corpus를 미리 만든다.</li>
+            <li>평균 난수뿐 아니라 production cardinality skew, common prefix, stride, duplicate, miss, churn, 공격 corpus를 넣는다.</li>
+            <li>microbenchmark의 0.x ms를 API p99로 외삽하지 않는다. allocator, lock, NUMA, cache contention, GC가 실제 경로를 바꾼다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">12. Error handling runbook</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">실패</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">놓치기 쉬운 점</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">initial allocation OOM</td><td style="padding:7px;border:1px solid #a7f3d0">초기화 실패, destroy 가능한 zero state</td><td style="padding:7px;border:1px solid #a7f3d0">반쯤 초기화된 pointer 노출</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">grow/cleanup OOM</td><td style="padding:7px;border:1px solid #a7f3d0">old map 무변경, typed OOM</td><td style="padding:7px;border:1px solid #a7f3d0">old slot부터 파괴하는 이동</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">capacity overflow</td><td style="padding:7px;border:1px solid #a7f3d0"><code>capacity &gt; SIZE_MAX/2</code> 사전 거부</td><td style="padding:7px;border:1px solid #a7f3d0">곱셈 wrap 후 작은 allocation</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">probe budget 초과</td><td style="padding:7px;border:1px solid #a7f3d0">명시 error·rehash/fallback·metric</td><td style="padding:7px;border:1px solid #a7f3d0">무한 loop 또는 resize 폭풍</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">destructor/callback</td><td style="padding:7px;border:1px solid #a7f3d0">소유권·호출 순서·재진입 금지 명시</td><td style="padding:7px;border:1px solid #a7f3d0">update 중 old value leak/double free</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">corruption detected</td><td style="padding:7px;border:1px solid #a7f3d0">fail fast, dump non-secret metadata, 격리</td><td style="padding:7px;border:1px solid #a7f3d0">조용히 repair해 원인 은폐</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">13. 실무 Best Practice / Anti-pattern</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">Best practice</th><th style="padding:8px;border:1px solid #a7f3d0">Anti-pattern</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">표준 library map을 기본 선택하고 요구가 수치로 다를 때만 custom 구현</td><td style="padding:8px;border:1px solid #a7f3d0">“O(1)이니까” 직접 구현을 바로 production에 투입</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">live α와 used α, max probe, resize/OOM을 관측</td><td style="padding:8px;border:1px solid #a7f3d0">size와 평균 latency만 dashboard에 표시</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">실제 key corpus와 장애 corpus를 회귀 자산으로 버전 관리</td><td style="padding:8px;border:1px solid #a7f3d0">균등 random UUID benchmark 하나로 승인</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">OOM·overflow·collision budget을 public API 계약에 포함</td><td style="padding:8px;border:1px solid #a7f3d0">실패는 abort하거나 “일어날 리 없다”고 가정</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">key equality/hash/immutability를 type 수준에서 묶고 property test</td><td style="padding:8px;border:1px solid #a7f3d0">mutable field를 key로 저장하고 삽입 후 변경</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">성능 회귀 gate에 절대 budget과 baseline 변화를 함께 사용</td><td style="padding:8px;border:1px solid #a7f3d0">노이즈가 큰 단일 run의 3% 차이로 배포 차단</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">14. 55분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>10분:</strong> Map ADT, ownership, duplicate, OOM 계약과 RI 8개를 먼저 적는다.</li>
+            <li><strong>15분:</strong> 3-state linear probing과 finite locate를 구현하고 최소 반례 4개를 테스트한다.</li>
+            <li><strong>10분:</strong> 선형 oracle과 10만 random operations를 비교하고 실패 seed를 shrink한다.</li>
+            <li><strong>10분:</strong> allocator hook으로 각 allocation 지점을 하나씩 실패시켜 old state snapshot을 비교한다.</li>
+            <li><strong>10분:</strong> uniform/stride/churn corpus에서 time+probe를 측정하고 cleanup threshold ADR을 작성한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#047857">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q1. open addressing에서 삭제를 EMPTY로 바꾸면 왜 안 되나요?</strong><br>home이 같은 A 뒤에 B가 밀린 최소 cluster를 그린다. A를 EMPTY로 만들면 B lookup이 그 자리에서 조기 종료해 거짓 miss다. tombstone, backward-shift deletion의 proof 조건, live/used α trade-off까지 연결한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q2. resize 중 OOM에도 map을 안전하게 유지하려면?</strong><br>old table은 read-only로 두고 candidate를 allocate→모든 FULL 재삽입→검증→pointer swap하는 two-phase commit을 설명한다. capacity overflow 사전 검사, exact-state fault test, peak 2× memory와 incremental migration 대안까지 말한다.</div>
+          <div style="padding:16px;background:#d1fae5;border-radius:10px"><strong>Q3. “hash map은 O(1)”을 검증하는 benchmark를 설계해보세요.</strong><br>expected/amortized/worst를 먼저 분리한다. production·adversarial corpus, hit/miss/update/churn, α sweep, probe histogram·p99/max·allocation·resize를 측정하고 differential/RI/fault/sanitizer로 correctness gate를 앞에 둔다. 이번 stride 반례의 10,000.5 probe를 예로 든다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li><code>size</code>와 <code>used</code>가 다른 이유와 각각의 운영 의미는?</li>
+            <li>first tombstone을 찾은 즉시 insert하면 생기는 최소 오류는?</li>
+            <li>get이 EMPTY에서 안전하게 멈출 수 있음을 RI로 증명하라.</li>
+            <li>failure-atomic rehash의 commit point는 어디인가?</li>
+            <li>Day 18의 amortized O(1)이 Day 19의 collision attack worst O(n)을 제거하지 못하는 이유는?</li>
+            <li>wall time과 probe count를 같이 측정해야 하는 이유는?</li>
+            <li>reference model이 시험 대상보다 단순해야 하는 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>답 확인:</strong> 1) FULL과 FULL+DELETED로 mapping 크기와 탐사 압력을 분리. 2) 뒤의 동일 key와 중복. 3) 삽입이 EMPTY를 건너뛰지 않는 reachability. 4) candidate 완성 뒤 pointer swap. 5) 상각은 resize 연산열, expected는 hash 분포 가정이며 적대 collision은 별도. 6) 시간 원인을 구조 지표로 구분. 7) 같은 복잡한 버그를 공유할 가능성을 낮춤.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">17. 셀프 리뷰 체크리스트</h2>
+          <ul style="padding-left:22px">
+            <li>나는 Map의 외부 계약과 내부 RI를 섞지 않고 각각 설명할 수 있는가?</li>
+            <li>정상 입력·실패 입력·적대 분포 각각에 자동화된 gate가 있는가?</li>
+            <li>“빠르다”를 CPU 시간이 아닌 probe·allocation·memory 원인까지 설명했는가?</li>
+            <li>OOM 후 성공처럼 보이는 부분 변경, overflow, 무한 probe를 모두 닫았는가?</li>
+            <li>내 서비스의 실제 key corpus와 p99 budget으로 threshold를 결정했는가?</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">18. 다음 날 연결</h2>
+          <p>Day 21은 <strong>리뷰: cache와 database hash table 연결</strong>이다. 오늘 만든 in-memory invariant를 CPU cache, buffer pool, database hash index/hash join, spill·partition, durability와 연결해 “같은 hash 아이디어가 계층마다 무엇을 보장하고 무엇을 보장하지 않는가”를 정리한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2008/resources/lec7/" style="color:#047857">MIT OpenCourseWare 6.006 — Lecture 7: Open Addressing, Cryptographic Hashing</a>: open addressing, probe와 load factor.</li>
+            <li><a href="https://www.ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/a7f609148928e4a10653d3f3be03a2b5_MIT6_006F11_lec10.pdf" style="color:#047857">MIT 6.006 Fall 2011 — Lecture 10: Open Addressing</a>: probing과 expected analysis.</li>
+            <li><a href="https://www.ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/d3e4d64266d481c74c9e7c15e09999fe_MIT6_006F11_lec08.pdf" style="color:#047857">MIT 6.006 Fall 2011 — Lecture 8: Hashing with Chaining</a>: dictionary ADT, collision과 universal hashing.</li>
+            <li><a href="https://abseil.io/about/design/swisstables" style="color:#047857">Abseil — Swiss Tables Design Notes</a>: control bytes, metadata probing, allocation 최적화와 API 차이.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.HashMap.html" style="color:#047857">Rust Standard Library — HashMap</a>: SwissTable 기반 구현, random seeding, key contract와 capacity API.</li>
+            <li><a href="https://clang.llvm.org/docs/AddressSanitizer.html" style="color:#047857">Clang — AddressSanitizer</a>: out-of-bounds, use-after-free 등 memory error 검출과 build 옵션.</li>
+            <li><a href="https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html" style="color:#047857">Clang — UndefinedBehaviorSanitizer</a>: undefined behavior 계측과 옵션.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·실행 검증: 2026-08-21 Asia/Seoul · 교육용 C11 구현과 mixer는 production cryptographic hash 또는 범용 library 대체물이 아니다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
