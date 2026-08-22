@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 21 · 리뷰: cache와 database hash table 연결</title>
+</head>
+<body style="margin:0;background:#111827;color:#243044;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#1e3a8a;color:#eff6ff">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 3 / DAY 21 · REVIEW</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">같은 “찾기”라도<br>cache·index·join의 계약은 다르다</h1>
+          <p style="margin:0;color:#bfdbfe">CPU cache line → DB buffer page → persistent hash index → ephemeral hash join · 130분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #2563eb;background:#dbeafe;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            hash lookup의 expected O(1)은 <strong>후보를 찾는 CPU 연산</strong>일 뿐이며, 실제 시스템 비용은 cache line·buffer page·heap fetch·overflow chain·spill I/O·동시성·복구 계약까지 포함해 설명해야 한다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Memory hierarchy</strong></td><td style="padding:8px;border:1px solid #bfdbfe">작고 빠른 CPU cache에서 RAM, SSD/HDD로 이어지는 저장 계층. 아래로 갈수록 보통 크고 느리다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Cache line</strong></td><td style="padding:8px;border:1px solid #bfdbfe">CPU cache가 메모리와 데이터를 주고받는 고정 크기 블록. 한 byte를 읽어도 이웃 byte가 함께 온다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Temporal locality</strong></td><td style="padding:8px;border:1px solid #bfdbfe">방금 쓴 데이터를 곧 다시 쓸 가능성. cache에 남아 있으면 hit가 난다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Spatial locality</strong></td><td style="padding:8px;border:1px solid #bfdbfe">접근한 주소의 이웃도 곧 쓸 가능성. 연속 배열·page batching이 활용한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Page / frame</strong></td><td style="padding:8px;border:1px solid #bfdbfe">page는 DB의 논리적 고정 크기 블록, frame은 그 page를 담는 RAM 공간이다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Buffer pool</strong></td><td style="padding:8px;border:1px solid #bfdbfe">DB가 disk page를 RAM frame에 보관하는 관리형 cache. page table·교체 정책·dirty flush가 필요하다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Pin count</strong></td><td style="padding:8px;border:1px solid #bfdbfe">현재 page를 사용 중인 실행자의 수. 0이 아니면 frame을 쫓아내면 안 된다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Dirty page</strong></td><td style="padding:8px;border:1px solid #bfdbfe">RAM에서 수정됐지만 아직 영구 저장소에 반영되지 않은 page.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Table index</strong></td><td style="padding:8px;border:1px solid #bfdbfe">query마다 만들지 않고 유지하는 보조 자료구조. key에서 row 위치 후보로 이동한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Tuple / TID</strong></td><td style="padding:8px;border:1px solid #bfdbfe">tuple은 DB row, TID는 그 row의 물리적 위치를 가리키는 식별자다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Lossy scan / recheck</strong></td><td style="padding:8px;border:1px solid #bfdbfe">index가 정확한 답 대신 후보를 내고 원본 row에서 조건을 다시 검사하는 방식.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Hash join</strong></td><td style="padding:8px;border:1px solid #bfdbfe">한 입력의 join key로 임시 hash table을 build하고 다른 입력을 probe하는 equality join 알고리즘.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Spill / batch</strong></td><td style="padding:8px;border:1px solid #bfdbfe">hash table이 메모리 예산을 넘을 때 partition을 임시 파일에 쓰고 나눠 처리하는 것.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Skew</strong></td><td style="padding:8px;border:1px solid #bfdbfe">특정 key나 partition에 데이터가 몰린 분포. 균등 hash 가정과 memory 계획을 깨뜨린다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe"><strong>Logical I/O</strong></td><td style="padding:8px;border:1px solid #bfdbfe">DB가 page를 요청한 횟수. 실제 disk read인지 buffer hit인지는 별도로 본다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">2. Architecture: 한 query가 통과하는 계층</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:33%;padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>① SQL / operator</strong></td><td style="padding:13px;background:#eff6ff"><code>WHERE id=?</code> 또는 <code>R.k=S.k</code>, 결과 의미 결정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ planner가 hash index / hash join / 다른 plan 선택</td></tr>
+            <tr><td style="padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>② Hash structure</strong></td><td style="padding:13px;background:#eff6ff">영구 index면 hash→bucket page→TID, join이면 build→probe</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ page ID를 요청하고 pin; miss면 storage read</td></tr>
+            <tr><td style="padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>③ Buffer pool</strong></td><td style="padding:13px;background:#eff6ff">page table: page ID→frame, dirty/pin/eviction 관리</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ frame 속 metadata·tuple을 CPU load</td></tr>
+            <tr><td style="padding:13px;background:#1d4ed8;color:white;border-radius:9px"><strong>④ CPU cache</strong></td><td style="padding:13px;background:#eff6ff">주소의 set/tag 확인, cache line 단위로 실제 byte 공급</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ equality·visibility recheck 후 정확한 row</td></tr>
+            <tr><td style="padding:13px;background:#172554;color:white;border-radius:9px"><strong>⑤ Result / metrics</strong></td><td style="padding:13px;background:#eff6ff">rows, probes, buffers hit/read, batches, temp bytes, p99</td></tr>
+          </table>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>중요한 구분:</strong> CPU cache는 일반적인 <code>Map&lt;K,V&gt;</code> 구현이 아니다. 물리 주소의 일부 bit로 set을 고르고 tag를 비교하는 hardware cache다. 반면 buffer pool의 page table과 query hash table은 실제 software hash map일 수 있다. 비슷한 “빠른 재사용” 효과와 내부 계약을 혼동하지 말자.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>상황:</strong> 2억 건의 주문에서 <code>customer_id</code> equality 조회와 주문-고객 equi-join을 수행한다. DB 전체는 RAM보다 크고, hot customer가 20% traffic을 차지하며, query당 memory budget과 동시 query 수가 제한된다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#dbeafe"><th align="left" style="padding:8px;border:1px solid #bfdbfe">먼저 묻는 질문</th><th align="left" style="padding:8px;border:1px solid #bfdbfe">선택에 주는 영향</th></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">predicate가 equality뿐인가?</td><td style="padding:8px;border:1px solid #bfdbfe">hash 가능. range/order/prefix가 필요하면 B-tree 계열 우선</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">구조가 영구적인가 query 한 번용인가?</td><td style="padding:8px;border:1px solid #bfdbfe">table index는 write/WAL/VACUUM 비용, hash join은 query memory/temp 비용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">build input이 memory에 맞는가?</td><td style="padding:8px;border:1px solid #bfdbfe">맞으면 in-memory join, 아니면 partition·batch·spill 또는 다른 join</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">key가 skewed·non-unique인가?</td><td style="padding:8px;border:1px solid #bfdbfe">overflow chain, hot partition, 거대한 join output을 따로 예산화</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">row 위치가 clustered인가?</td><td style="padding:8px;border:1px solid #bfdbfe">같은 TID 수라도 random heap page fetch가 locality를 파괴할 수 있음</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">동시 query는 몇 개인가?</td><td style="padding:8px;border:1px solid #bfdbfe">per-node memory × operators × sessions가 총 RAM을 넘지 않게 계산</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">4. 네 계층의 ADT와 representation invariant</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">계층</th><th style="padding:7px;border:1px solid #bfdbfe">추상 계약</th><th style="padding:7px;border:1px solid #bfdbfe">핵심 RI</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">CPU cache</td><td style="padding:7px;border:1px solid #bfdbfe">주소 load/store의 동일한 memory semantics를 빠르게 제공</td><td style="padding:7px;border:1px solid #bfdbfe">valid line의 tag가 주소 block과 일치; coherence·ordering 규칙 보존</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Buffer pool</td><td style="padding:7px;border:1px solid #bfdbfe"><code>Fetch(page_id)→pinned frame</code>, <code>Unpin(dirty?)</code></td><td style="padding:7px;border:1px solid #bfdbfe">resident page↔frame 일대일; pin≥0; pinned는 evict 불가; dirty는 안전한 write 전 유실 불가</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Hash index</td><td style="padding:7px;border:1px solid #bfdbfe">equality key→현재 보이는 tuple 후보</td><td style="padding:7px;border:1px solid #bfdbfe">equal key는 같은 bucket 경로; entry→유효 TID; split 중에도 탐색 완전; WAL/lock으로 crash·concurrency 보존</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Hash join</td><td style="padding:7px;border:1px solid #bfdbfe">조건 <code>R.k=S.k</code>를 만족하는 pair를 multiplicity 포함 출력</td><td style="padding:7px;border:1px solid #bfdbfe">build tuple 보존; equal key는 같은 bucket/partition; 후보마다 equality recheck; batch별 결과 합집합이 전체와 같음</td></tr>
+          </table>
+          <p><strong>면접 포인트:</strong> in-memory <code>Map&lt;K,V&gt;</code>는 보통 key당 value 하나지만 DB index/join은 duplicate key에 여러 TID·tuple을 보존해야 한다. value를 덮어쓰는 일반 map을 그대로 쓰면 join multiplicity가 깨진다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">5. Hash index와 hash join은 완전히 다른 수명이다</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#dbeafe"><th style="padding:8px;border:1px solid #bfdbfe">관점</th><th style="padding:8px;border:1px solid #bfdbfe">Persistent hash index</th><th style="padding:8px;border:1px solid #bfdbfe">Ephemeral hash join table</th></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">수명</td><td style="padding:8px;border:1px solid #bfdbfe">여러 transaction·restart를 넘어 유지</td><td style="padding:8px;border:1px solid #bfdbfe">한 plan execution 동안만</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">value</td><td style="padding:8px;border:1px solid #bfdbfe">hash code + TID 후보</td><td style="padding:8px;border:1px solid #bfdbfe">build tuple 또는 row reference</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">정확성 추가 조건</td><td style="padding:8px;border:1px solid #bfdbfe">visibility·원본 equality recheck</td><td style="padding:8px;border:1px solid #bfdbfe">join equality·duplicate multiplicity</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">성장</td><td style="padding:8px;border:1px solid #bfdbfe">bucket split·overflow page·VACUUM/REINDEX</td><td style="padding:8px;border:1px solid #bfdbfe">resize 또는 batch 증가·temp spill</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">실패 복구</td><td style="padding:8px;border:1px solid #bfdbfe">WAL·crash recovery·lock/latch</td><td style="padding:8px;border:1px solid #bfdbfe">query abort와 temp resource cleanup</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">쓰기 비용</td><td style="padding:8px;border:1px solid #bfdbfe">모든 관련 DML에 지속 부과</td><td style="padding:8px;border:1px solid #bfdbfe">그 query에서 build 한 번</td></tr>
+          </table>
+          <p>PostgreSQL hash index는 4-byte hash value만 저장하므로 scan이 lossy하며 원본 조건을 다시 확인해야 한다. equality 한 column만 지원하고 uniqueness를 보장하지 않는다. 긴 key equality workload에서 작을 수 있지만 범위·정렬 요구에는 맞지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">6. Hash join 정당성 증명</h2>
+          <p><strong>In-memory build/probe:</strong> R의 모든 tuple r을 <code>h(r.k)</code> bucket에 보존한다. 각 s∈S에 대해 <code>h(s.k)</code> bucket만 보고 그 안의 모든 r에 실제 <code>r.k=s.k</code>를 검사한다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>Completeness:</strong> 실제 match r.k=s.k라면 hash contract로 h(r.k)=h(s.k), 따라서 s probe가 r의 bucket을 방문한다.</li>
+            <li><strong>Soundness:</strong> 같은 hash인 것만으로 출력하지 않고 equality가 true인 pair만 내므로 collision false positive가 없다.</li>
+            <li><strong>Multiplicity:</strong> build bucket에 같은 key의 r을 모두 보존하고 각 s와 비교하므로 duplicate의 Cartesian multiplicity가 유지된다.</li>
+          </ol>
+          <p><strong>Grace partition:</strong> R과 S를 같은 <code>p=h₁(k) mod P</code>로 나눈다. equal key는 같은 partition 번호이므로 서로 다른 partition 사이에는 match가 없다. 모든 tuple이 정확히 한 partition에 들어간다는 보존식 <code>Σ|Rᵢ|=|R|</code>, <code>Σ|Sᵢ|=|S|</code>와 각 pair의 정확한 in-memory join을 합치면 전체 join과 같다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>최소 반례:</strong> hash code만 같으면 join 결과로 내면 collision인 <code>"Aa"</code>와 <code>"BB"</code> 같은 서로 다른 key가 false match가 된다. 또 duplicate build rows를 map의 단일 value로 덮어쓰면 기대 결과 2개가 1개로 줄어든다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">7. 메모리가 부족하면 I/O 알고리즘이 된다</h2>
+          <p>작은 build relation이 <code>B−2</code> buffer page 안에 들어가면 naive in-memory hash join은 입력을 한 번씩 읽어 약 <code>M+N</code> page I/O가 든다. 들어가지 않으면 Grace hash join은 partition 단계에서 양쪽을 읽고 써 <code>2(M+N)</code>, probe 단계에서 다시 읽어 <code>M+N</code>, 총 <code>3(M+N)</code> I/O가 든다(한 번의 균등 partition으로 충분하고 output write 제외).</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#dbeafe"><th style="padding:8px;border:1px solid #bfdbfe">조건</th><th style="padding:8px;border:1px solid #bfdbfe">선택</th><th style="padding:8px;border:1px solid #bfdbfe">위험</th></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">build ≤ memory budget</td><td style="padding:8px;border:1px solid #bfdbfe">in-memory hash join</td><td style="padding:8px;border:1px solid #bfdbfe">cardinality/row-width underestimate</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">partition별 build ≤ B−2</td><td style="padding:8px;border:1px solid #bfdbfe">Grace hash join</td><td style="padding:8px;border:1px solid #bfdbfe">temp I/O와 disk-full</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">hot partition이 계속 큼</td><td style="padding:8px;border:1px solid #bfdbfe">다른 seed 재partition·heavy-hitter 분리·fallback</td><td style="padding:8px;border:1px solid #bfdbfe">같은 hash 반복 시 무진행 recursion</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">입력이 이미 정렬·결과도 정렬 필요</td><td style="padding:8px;border:1px solid #bfdbfe">sort-merge join 비교</td><td style="padding:8px;border:1px solid #bfdbfe">hash가 항상 빠르다는 고정 관념</td></tr>
+          </table>
+          <p>PostgreSQL에서는 한 query에 sort/hash node가 여러 개이고 session도 여러 개일 수 있다. 따라서 <code>work_mem</code> 하나를 “connection당 최대 메모리”로 해석하면 안 된다. hash 기반 node의 한도는 <code>work_mem × hash_mem_multiplier</code>로 계산된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">8. 직접 구현: buffer pin과 partitioned join</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#172554;color:#eff6ff;padding:16px;border-radius:10px;font-size:13px"><code>PageGuard fetch(PageId id) {
+  lock(page_table_latch);
+  if (page_table.contains(id)) {
+    Frame *f = page_table[id];
+    f-&gt;pin_count++;                 // evict 불가 상태를 먼저 만든다
+    replacer.set_evictable(f, false);
+    unlock(page_table_latch);
+    return guard(f);                // guard destructor가 unpin
+  }
+
+  Frame *victim = reserve_unpinned_frame();
+  if (!victim) return NO_FRAME;
+  if (victim-&gt;dirty &amp;&amp; !flush(victim)) {
+    rollback_reservation(victim);   // dirty data를 버리지 않는다
+    return IO_ERROR;
+  }
+  read_page(id, victim);            // 실패 시 page table commit 전 rollback
+  page_table[id] = victim;
+  victim-&gt;pin_count = 1;
+  unlock(page_table_latch);
+  return guard(victim);
+}
+
+for (tuple r : R) spill[P(h1(r.key))].append(r);
+for (tuple s : S) spill[P(h1(s.key))].append(s);
+assert(sum_partition_rows(R) == R.rows);  // conservation RI
+
+for (int p = 0; p &lt; P; p++) {
+  if (!smaller_partition_fits(p)) repartition_or_fallback(p);
+  MultiMap build = build_all_duplicates(smaller[p], h2);
+  for (tuple x : larger[p])
+    for (tuple y : build.candidates(x.key))
+      if (equal(x.key, y.key)) emit(x, y); // collision recheck
+}</code></pre>
+          <p><strong>RAII/guard의 가치:</strong> success·error·cancel 어느 경로에서도 unpin을 빠뜨리지 않게 한다. pin leak는 당장 잘못된 row를 내지 않아도 evictable frame을 고갈시켜 시간이 지난 뒤 전체 DB를 멈추게 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">9. 복잡도와 실제 비용 표</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">구조/연산</th><th style="padding:7px;border:1px solid #bfdbfe">CPU 관점</th><th style="padding:7px;border:1px solid #bfdbfe">Memory/I/O 관점</th><th style="padding:7px;border:1px solid #bfdbfe">최악·숨은 비용</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">flat hash lookup</td><td style="padding:7px;border:1px solid #bfdbfe">expected O(1)</td><td style="padding:7px;border:1px solid #bfdbfe">metadata/slot cache lines</td><td style="padding:7px;border:1px solid #bfdbfe">O(n) collision, resize peak</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">buffer page lookup</td><td style="padding:7px;border:1px solid #bfdbfe">page table expected O(1)</td><td style="padding:7px;border:1px solid #bfdbfe">hit면 RAM, miss면 storage read</td><td style="padding:7px;border:1px solid #bfdbfe">dirty flush·queue·latch wait</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">hash index equality</td><td style="padding:7px;border:1px solid #bfdbfe">expected O(1)+recheck</td><td style="padding:7px;border:1px solid #bfdbfe">bucket+overflow+heap pages</td><td style="padding:7px;border:1px solid #bfdbfe">skew chain O(n), write/WAL</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">in-memory hash join</td><td style="padding:7px;border:1px solid #bfdbfe">expected O(R+S+Z)</td><td style="padding:7px;border:1px solid #bfdbfe">O(smaller relation) RAM</td><td style="padding:7px;border:1px solid #bfdbfe">collision·Z output 폭발</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Grace hash join</td><td style="padding:7px;border:1px solid #bfdbfe">partition+local hash</td><td style="padding:7px;border:1px solid #bfdbfe">보통 3(M+N) page I/O</td><td style="padding:7px;border:1px solid #bfdbfe">recursive spill·skew·temp full</td></tr>
+          </table>
+          <p><code>Z</code>는 출력 pair 수다. 두 입력에 같은 key가 각각 r,s번 있으면 그 key만 <code>r×s</code> 결과가 생긴다. 알고리즘이 완벽해도 출력 자체가 크면 그보다 빨라질 수 없으므로 complexity에서 output을 빼면 안 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">10. 실측: 같은 논리 접근, 다른 locality</h2>
+          <p>Apple clang 21.0.0, C11 <code>-O3 -Wall -Wextra -Werror</code>, 5회 실행 중앙값. 128MiB payload에서 동일한 419만 row ID를 읽되 순서만 바꿨다. 각 실행 내부 fetch는 7회 중앙값이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#dbeafe"><th style="padding:8px;border:1px solid #bfdbfe">측정</th><th style="padding:8px;border:1px solid #bfdbfe">결과</th><th style="padding:8px;border:1px solid #bfdbfe">해석</th></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">random row fetch</td><td style="padding:8px;border:1px solid #bfdbfe">16.531ms</td><td style="padding:8px;border:1px solid #bfdbfe">page/cache line 재방문이 멀리 흩어짐</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">page-grouped fetch</td><td style="padding:8px;border:1px solid #bfdbfe">2.955ms</td><td style="padding:8px;border:1px solid #bfdbfe">같은 32,768개 4KiB page를 약 5.59× 빠르게 소비</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">one-time qsort</td><td style="padding:8px;border:1px solid #bfdbfe">413.333ms</td><td style="padding:8px;border:1px solid #bfdbfe">한 번 읽으려고 정렬하면 총비용은 오히려 큼</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">hash join build/probe</td><td style="padding:8px;border:1px solid #bfdbfe">14.369/92.809ms</td><td style="padding:8px;border:1px solid #bfdbfe">1,048,576 build·2,097,152 probe, avg/max probe 2.247/48</td></tr>
+            <tr><td style="padding:8px;border:1px solid #bfdbfe">64-way partition</td><td style="padding:8px;border:1px solid #bfdbfe">max 15,850→212,523</td><td style="padding:8px;border:1px solid #bfdbfe">20% hot key가 최대 partition을 약 13.4× 확대</td></tr>
+          </table>
+          <p><strong>의사결정:</strong> sorting 비용을 fetch 절감 <code>16.531−2.955=13.576ms</code>로 나누면 약 31회 재사용해야 단순 qsort가 상쇄된다. 자연스럽게 clustered된 데이터, 이미 정렬된 입력, linear-time page bucketing, 반복 재사용일 때만 이득일 수 있다. 결과 순서가 API라면 원래 순서를 복구하는 비용도 포함한다.</p>
+          <p><strong>검증:</strong> hash join 결과 525,860건을 범위 oracle과 비교했고, hash RI·partition row conservation을 검사했다. 전체 suite는 ASan/UBSan에서도 통과했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">11. Benchmark와 EXPLAIN에서 볼 것</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Hash node:</strong> 실제 rows, Buckets, Batches, peak Memory Usage. Batches가 1보다 커졌다면 partition/spill 가능성을 조사한다.</li>
+            <li><strong>BUFFERS:</strong> shared hit/read/dirtied/written과 temp read/written. logical access와 실제 I/O를 분리한다.</li>
+            <li><strong>Estimate error:</strong> estimated rows와 actual rows의 배율. row count·width 오차는 잘못된 build side와 memory budget으로 이어진다.</li>
+            <li><strong>Distribution:</strong> 평균 bucket뿐 아니라 max chain/partition, hot-key frequency, duplicate multiplicity를 본다.</li>
+            <li><strong>Lifecycle:</strong> cold/warm cache, concurrent sessions, checkpoint/VACUUM, resize/split 구간을 분리한다.</li>
+            <li><strong>End-to-end:</strong> micro hash probe만 재지 말고 heap fetch, visibility check, materialization, output network까지 포함한다.</li>
+          </ul>
+          <div style="padding:16px;background:#dbeafe;border:1px solid #93c5fd;border-radius:10px"><strong>분석 문장 예시:</strong> “Hash Join 자체 probe는 평균 2.25회였지만 8 batches와 temp read가 발생했고, hot key가 한 partition을 키웠다. <code>work_mem</code>만 전역으로 올리기 전에 cardinality·skew를 고치고 동시 query 총 메모리를 계산하겠다.”</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">12. Error handling runbook</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#dbeafe"><th align="left" style="padding:7px;border:1px solid #bfdbfe">실패</th><th align="left" style="padding:7px;border:1px solid #bfdbfe">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #bfdbfe">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">buffer frame 없음</td><td style="padding:7px;border:1px solid #bfdbfe">pin leak 진단, wait/backpressure 또는 명시 error</td><td style="padding:7px;border:1px solid #bfdbfe">pinned frame 강제 eviction</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">dirty flush I/O 실패</td><td style="padding:7px;border:1px solid #bfdbfe">dirty 유지·victim commit 취소·오류 전파</td><td style="padding:7px;border:1px solid #bfdbfe">새 page로 덮어써 변경 유실</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">hash join memory 초과</td><td style="padding:7px;border:1px solid #bfdbfe">bounded batches·temp spill·취소 가능</td><td style="padding:7px;border:1px solid #bfdbfe">process OOM까지 무제한 grow</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">temp disk full</td><td style="padding:7px;border:1px solid #bfdbfe">query 실패·partial temp cleanup·quota/alert</td><td style="padding:7px;border:1px solid #bfdbfe">불완전 결과 반환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">skewed batch 무진행</td><td style="padding:7px;border:1px solid #bfdbfe">recursion/partition limit, heavy-hitter·sort fallback</td><td style="padding:7px;border:1px solid #bfdbfe">같은 hash로 영원히 repartition</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">index corruption/split crash</td><td style="padding:7px;border:1px solid #bfdbfe">DBMS WAL·검사·REINDEX 절차 사용</td><td style="padding:7px;border:1px solid #bfdbfe">application에서 on-disk index 직접 수선</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">query cancel</td><td style="padding:7px;border:1px solid #bfdbfe">pin/latch/temp file을 scope guard로 해제</td><td style="padding:7px;border:1px solid #bfdbfe">happy path에서만 cleanup</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">13. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Plan from predicates:</strong> equality·range·ordering·uniqueness를 먼저 적고 index 종류를 고른다. equality라고 무조건 hash index가 아니다.</li>
+            <li><strong>Use the DBMS:</strong> 영구 hash index의 WAL, concurrent split, vacuum을 직접 재구현하지 않는다. 버전별 공식 지원 범위를 확인한다.</li>
+            <li><strong>Budget multiplication:</strong> per-node memory × 한 plan의 동시 node × session 수 × parallel workers를 capacity plan에 넣는다.</li>
+            <li><strong>Observe skew:</strong> 평균 cardinality뿐 아니라 most-common-values, max partition, duplicate output을 수집하고 통계를 최신화한다.</li>
+            <li><strong>Keep cause metrics:</strong> latency와 함께 probes, buffer hit/read, batches, temp bytes, row estimate ratio를 기록한다.</li>
+            <li><strong>Own resource lifetime:</strong> pin, latch, memory context, temp file을 guard/arena로 query cancel에도 회수한다.</li>
+            <li><strong>Test cold and warm:</strong> 개발 노트북 warm-cache 결과 하나를 production storage 성능으로 일반화하지 않는다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">14. 40분 리뷰 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>8분:</strong> 서비스 query 하나를 SQL operator→index/join→buffer page→cache line 흐름으로 그린다.</li>
+            <li><strong>8분:</strong> buffer pool·hash index·hash join의 ADT와 RI를 각각 3개씩 쓴다.</li>
+            <li><strong>8분:</strong> hash join completeness/soundness/multiplicity를 말로 증명한다.</li>
+            <li><strong>8분:</strong> <code>EXPLAIN (ANALYZE, BUFFERS)</code>에서 estimate, batches, memory, temp I/O를 읽는다.</li>
+            <li><strong>8분:</strong> memory×concurrency 계산과 skew·disk-full·cancel runbook을 작성한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q1. HashMap 조회가 O(1)인데 DB 조회가 왜 느릴 수 있나요?</strong><br>expected/worst 전제를 먼저 구분한다. hash는 bucket 후보만 찾고 cache miss, buffer miss, overflow page, random heap fetch, equality·visibility recheck, lock/latch가 뒤따른다. 시간과 probes·BUFFERS·I/O를 함께 측정한다고 답한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q2. Hash index와 hash join의 차이를 설계 관점에서 설명하세요.</strong><br>persistent 보조 구조와 query-local 실행 구조의 수명부터 나눈다. index는 DML·WAL·split·VACUUM·TID recheck, join은 build/probe·duplicate multiplicity·memory/spill·temp cleanup이 핵심이다. 둘 다 equality만 활용하지만 계약이 다르다.</div>
+          <div style="padding:16px;background:#dbeafe;border-radius:10px"><strong>Q3. Hash join이 memory를 넘고 hot key도 있을 때 어떻게 대응하나요?</strong><br>같은 h₁로 양쪽을 partition하는 correctness와 한 pass 3(M+N) I/O를 설명한다. Batches/temp I/O/max partition을 관측하고, 다른 seed 재partition·heavy-hitter 분리·recursion limit·sort-merge fallback을 둔다. 전역 memory 증가는 동시성 총량 계산 후 결정한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>CPU cache와 software hash map이 같은 자료구조가 아닌 이유는?</li>
+            <li>buffer pool에서 pinned dirty frame을 바로 재사용하면 어떤 두 계약이 깨지는가?</li>
+            <li>PostgreSQL hash index가 원본 equality를 recheck해야 하는 이유는?</li>
+            <li>Grace partition 뒤 다른 번호의 partition끼리 비교하지 않아도 되는 proof는?</li>
+            <li>R key가 3개, S 같은 key가 4개면 inner join output은 몇 개인가?</li>
+            <li>Day 17 tombstone debt와 on-disk overflow chain의 공통점은?</li>
+            <li>Day 20의 failure atomicity를 buffer page fetch에 적용하면 commit point는 어디인가?</li>
+            <li><code>work_mem=64MB</code>라는 사실만으로 session 메모리 상한을 64MB라 할 수 없는 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) 주소 set/tag hardware mapping과 임의 K/V ADT 차이. 2) active reference와 미영구화 변경 유실. 3) 4-byte hash collision과 MVCC visibility. 4) equal key⇒같은 h₁⇒같은 partition. 5) 12개. 6) 삭제/충돌 잔여 구조가 탐색 경로를 늘림. 7) read 성공 뒤 page table mapping을 원자적으로 공개할 때. 8) 여러 node·session·worker와 hash multiplier가 곱해짐.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">17. Week 3 누적 셀프 리뷰</h2>
+          <ul style="padding-left:22px">
+            <li>hash contract, collision, load factor, probing, tombstone, resize를 하나의 RI로 연결할 수 있는가?</li>
+            <li>expected O(1), amortized O(1), worst O(n), I/O cost를 서로 바꿔 말하지 않는가?</li>
+            <li>persistent index와 ephemeral operator의 ownership·failure·concurrency 차이를 설명하는가?</li>
+            <li>평균값 대신 max probe/partition, p99, temp bytes로 실패 입력을 볼 수 있는가?</li>
+            <li>“hash를 쓰자”가 아니라 predicate·분포·memory·locality·운영 계약으로 선택을 방어하는가?</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">18. 다음 날 연결</h2>
+          <p>Day 22부터 Week 4 <strong>Trees and Ordered Structures</strong>로 간다. 첫 주제는 <strong>tree vocabulary와 traversal</strong>이다. hash가 버린 순서·범위·계층을 tree가 어떻게 표현하는지, root/parent/child/depth/height/subtree부터 DFS/BFS traversal invariant까지 연결한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://15445.courses.cs.cmu.edu/spring2025/notes/07-hashtables.pdf" style="color:#1d4ed8">CMU 15-445/645 — Hash Tables</a>: DBMS 내부 metadata·temporary join table·table index, 평균/최악 비용과 locality.</li>
+            <li><a href="https://15445.courses.cs.cmu.edu/spring2025/project1/" style="color:#1d4ed8">CMU 15-445/645 — Buffer Pool Manager</a>: page/frame 구분, page table, pin·thread-safety와 buffer pool 역할.</li>
+            <li><a href="https://15445.courses.cs.cmu.edu/fall2023/notes/11-joins.pdf" style="color:#1d4ed8">CMU 15-445/645 — Join Algorithms</a>: build/probe, Grace hash join, memory 조건과 3(M+N) I/O model.</li>
+            <li><a href="https://www.postgresql.org/docs/current/hash-index.html" style="color:#1d4ed8">PostgreSQL Current — Hash Indexes</a>: crash recovery, 4-byte hash, lossy scan, equality-only, overflow·split·VACUUM.</li>
+            <li><a href="https://www.postgresql.org/docs/current/runtime-config-resource.html" style="color:#1d4ed8">PostgreSQL Current — Resource Consumption</a>: <code>work_mem</code>, concurrent operators와 <code>hash_mem_multiplier</code>.</li>
+            <li><a href="https://www.postgresql.org/docs/current/using-explain.html" style="color:#1d4ed8">PostgreSQL Current — Using EXPLAIN</a>: Hash node의 Buckets·Batches·Memory Usage와 BUFFERS 해석.</li>
+            <li><a href="https://abseil.io/about/design/swisstables" style="color:#1d4ed8">Abseil — Swiss Tables Design Notes</a>: dense control metadata와 후보 SIMD 검사로 cache-friendly lookup 구현.</li>
+            <li><a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel64-and-ia32-architectures-optimization.html" style="color:#1d4ed8">Intel — Optimization Reference Manual</a>: memory hierarchy와 cache-aware 최적화의 공식 참고서.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·실행 검증: 2026-08-22 Asia/Seoul · 실측은 교육용 단일 프로세스 benchmark이며 특정 DB 제품의 end-to-end 성능을 대체하지 않는다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

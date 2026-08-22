@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-21T09:10:47+09:00",
+  "updatedAt": "2026-08-22T09:00:23+09:00",
   "lessons": [
     {
       "day": 1,
@@ -185,6 +185,15 @@
       "path": "day-20.html",
       "kind": "lab",
       "publishedAt": "2026-08-21T09:10:47+09:00"
+    },
+    {
+      "day": 21,
+      "week": 3,
+      "title": "리뷰: cache와 database hash table 연결",
+      "summary": "CPU cache line, DB buffer page, 영구 hash index, 임시 hash join의 서로 다른 계약을 연결하고 locality·spill·skew·복구 비용까지 통합합니다.",
+      "path": "day-21.html",
+      "kind": "review",
+      "publishedAt": "2026-08-22T09:00:23+09:00"
     }
   ]
 }
