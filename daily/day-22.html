@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 22 · tree vocabulary와 traversal</title>
+</head>
+<body style="margin:0;background:#111827;color:#27324a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#581c87;color:#faf5ff">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 4 / DAY 22</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">Tree는 그림이 아니라<br>유일한 경로와 방문 계약이다</h1>
+          <p style="margin:0;color:#e9d5ff">Vocabulary → representation invariant → DFS/BFS proof → depth/width budget → locality · 130분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #7e22ce;background:#f3e8ff;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            rooted tree의 본질은 root에서 모든 node로 가는 경로가 유일하다는 것이며, traversal은 이 불변식을 이용해 각 node를 정확히 한 번 방문하되 DFS는 높이 h, BFS는 최대 폭 w의 메모리를 감당해야 한다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Node</strong></td><td style="padding:8px;border:1px solid #e9d5ff">값과 연결 정보를 담는 한 지점. 정점(vertex)이라고도 한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Edge</strong></td><td style="padding:8px;border:1px solid #e9d5ff">두 node의 연결. rooted tree에서는 parent→child 방향으로 해석한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Root</strong></td><td style="padding:8px;border:1px solid #e9d5ff">parent가 없는 시작 node. 비어 있지 않은 rooted tree에는 정확히 하나다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Parent / child</strong></td><td style="padding:8px;border:1px solid #e9d5ff">한 edge 위의 바로 상위/하위 node. 모든 non-root node는 parent가 정확히 하나다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Sibling</strong></td><td style="padding:8px;border:1px solid #e9d5ff">같은 parent를 공유하는 node들.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Leaf / internal node</strong></td><td style="padding:8px;border:1px solid #e9d5ff">child가 0개인 node / 하나 이상인 node.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Ancestor / descendant</strong></td><td style="padding:8px;border:1px solid #e9d5ff">parent를 반복해 만나는 상위 node / child를 반복해 만나는 하위 node.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Path</strong></td><td style="padding:8px;border:1px solid #e9d5ff">edge를 이어 만든 경로. tree에서는 두 node 사이 simple path가 유일하다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Depth</strong></td><td style="padding:8px;border:1px solid #e9d5ff">root에서 해당 node까지 edge 수. root depth는 0으로 정한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Height</strong></td><td style="padding:8px;border:1px solid #e9d5ff">node에서 가장 먼 leaf까지 edge 수. leaf height는 0, 이 자료의 empty tree height는 −1.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Subtree</strong></td><td style="padding:8px;border:1px solid #e9d5ff">어떤 node와 그 모든 descendant가 만드는 tree.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Degree / arity</strong></td><td style="padding:8px;border:1px solid #e9d5ff">node의 child 수 / 허용되는 최대 child 수.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Ordered tree</strong></td><td style="padding:8px;border:1px solid #e9d5ff">각 parent의 children 순서가 의미 있는 tree. 순서가 다르면 다른 구조다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Binary tree</strong></td><td style="padding:8px;border:1px solid #e9d5ff">각 node가 구분되는 left/right child를 최대 하나씩 갖는 ordered tree.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Forest</strong></td><td style="padding:8px;border:1px solid #e9d5ff">서로 분리된 tree들의 모음. root를 제거한 tree의 child subtrees도 forest다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Traversal</strong></td><td style="padding:8px;border:1px solid #e9d5ff">정한 순서로 모든 node를 방문하는 절차. 방문 시점이 pre/in/post를 가른다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff"><strong>Frontier</strong></td><td style="padding:8px;border:1px solid #e9d5ff">발견했지만 아직 처리하지 않은 node 집합. DFS는 stack, BFS는 queue로 관리한다.</td></tr>
+          </table>
+          <div style="margin-top:14px;padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>정의 함정:</strong> 어떤 책은 node 수로 height를 세어 leaf height를 1로 둔다. 면접에서는 “edge 수 기준”처럼 convention을 먼저 선언하라. 정의가 다를 뿐 증명과 코드가 일관되면 된다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">2. 한 그림으로 보는 구조와 순회</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:6px;text-align:center">
+            <tr><td colspan="4" style="padding:12px;background:#581c87;color:white;border-radius:10px"><strong>A · root · depth 0 · height 2</strong></td></tr>
+            <tr><td colspan="4" style="color:#7e22ce;font-weight:800">↙ left child　　　　　　　　　right child ↘</td></tr>
+            <tr><td colspan="2" style="padding:11px;background:#ede9fe;border-radius:9px"><strong>B · internal · depth 1</strong></td><td colspan="2" style="padding:11px;background:#ede9fe;border-radius:9px"><strong>C · internal · depth 1</strong></td></tr>
+            <tr><td style="color:#7e22ce">↙</td><td style="color:#7e22ce">↘</td><td style="color:#7e22ce">↙</td><td style="color:#7e22ce">↘</td></tr>
+            <tr><td style="padding:10px;background:#f3e8ff;border-radius:9px"><strong>D</strong><br>leaf</td><td style="padding:10px;background:#f3e8ff;border-radius:9px"><strong>E</strong><br>leaf</td><td style="padding:10px;background:#f3e8ff;border-radius:9px"><strong>F</strong><br>leaf</td><td style="padding:10px;background:#f3e8ff;border-radius:9px"><strong>G</strong><br>leaf</td></tr>
+          </table>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:12px;border-collapse:collapse">
+            <tr style="background:#f3e8ff"><th style="padding:8px;border:1px solid #e9d5ff">Traversal</th><th style="padding:8px;border:1px solid #e9d5ff">방문 순서</th><th style="padding:8px;border:1px solid #e9d5ff">대표 의미</th></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Preorder</td><td style="padding:8px;border:1px solid #e9d5ff">A B D E C F G</td><td style="padding:8px;border:1px solid #e9d5ff">parent를 children보다 먼저: copy·serialize·권한 전파</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Inorder</td><td style="padding:8px;border:1px solid #e9d5ff">D B E A F C G</td><td style="padding:8px;border:1px solid #e9d5ff">left-node-right: BST에서만 sorted 의미</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Postorder</td><td style="padding:8px;border:1px solid #e9d5ff">D E B F G C A</td><td style="padding:8px;border:1px solid #e9d5ff">children 후 parent: subtree aggregate·safe free</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Level-order</td><td style="padding:8px;border:1px solid #e9d5ff">A B C D E F G</td><td style="padding:8px;border:1px solid #e9d5ff">depth가 작은 순: nearest match·layer processing</td></tr>
+          </table>
+          <p><strong>일반 tree의 inorder?</strong> binary tree는 left와 right 사이에 node를 놓을 자리가 하나라 정의가 자연스럽다. children이 3개인 일반 tree에는 “어느 child 뒤에 node를 방문할지” 표준이 없으므로 policy를 별도로 정의해야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">3. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:32%;padding:13px;background:#7e22ce;color:white;border-radius:9px"><strong>① Input contract</strong></td><td style="padding:13px;background:#faf5ff">single root? child order? shared node/cycle 허용? 최대 nodes/depth?</td></tr>
+            <tr><td align="center" colspan="2" style="color:#7e22ce;font-weight:800">↓ parse 전에 bytes·node·depth·fan-out budget</td></tr>
+            <tr><td style="padding:13px;background:#7e22ce;color:white;border-radius:9px"><strong>② Validate / normalize</strong></td><td style="padding:13px;background:#faf5ff">bounds, one-parent, acyclic, reachable, ownership 검사</td></tr>
+            <tr><td align="center" colspan="2" style="color:#7e22ce;font-weight:800">↓ workload에 맞는 representation</td></tr>
+            <tr><td style="padding:13px;background:#7e22ce;color:white;border-radius:9px"><strong>③ Store</strong></td><td style="padding:13px;background:#faf5ff">pointer nodes / arena indices / child vector / implicit array</td></tr>
+            <tr><td align="center" colspan="2" style="color:#7e22ce;font-weight:800">↓ 필요한 방문 순서와 memory ceiling</td></tr>
+            <tr><td style="padding:13px;background:#7e22ce;color:white;border-radius:9px"><strong>④ Traverse</strong></td><td style="padding:13px;background:#faf5ff">pre/in/post DFS stack 또는 level-order bounded queue</td></tr>
+            <tr><td align="center" colspan="2" style="color:#7e22ce;font-weight:800">↓ callback 실패·취소·변경 정책을 명시</td></tr>
+            <tr><td style="padding:13px;background:#581c87;color:white;border-radius:9px"><strong>⑤ Observe</strong></td><td style="padding:13px;background:#faf5ff">visited, max depth/frontier, invalid edge, elapsed, allocation</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">4. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> untrusted JSON으로 받은 조직도를 검증하고, (1) 화면에는 depth 순으로 보여주고, (2) 각 팀의 인원 합은 subtree 기준으로 계산하며, (3) 저장 전에는 parent-before-child 순으로 직렬화한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#f3e8ff"><th align="left" style="padding:8px;border:1px solid #e9d5ff">요구</th><th align="left" style="padding:8px;border:1px solid #e9d5ff">선택</th><th align="left" style="padding:8px;border:1px solid #e9d5ff">제약</th></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">조직도 표시</td><td style="padding:8px;border:1px solid #e9d5ff">level-order BFS</td><td style="padding:8px;border:1px solid #e9d5ff">wide level queue memory budget</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">subtree 합계</td><td style="padding:8px;border:1px solid #e9d5ff">postorder DFS</td><td style="padding:8px;border:1px solid #e9d5ff">child result 후 parent 계산</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">직렬화</td><td style="padding:8px;border:1px solid #e9d5ff">preorder + child count</td><td style="padding:8px;border:1px solid #e9d5ff">구조 복원을 위한 framing 필요</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">입력 검증</td><td style="padding:8px;border:1px solid #e9d5ff">iterative color/indegree</td><td style="padding:8px;border:1px solid #e9d5ff">cycle, duplicate parent, orphan reject</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">최대 depth 100만</td><td style="padding:8px;border:1px solid #e9d5ff">explicit stack</td><td style="padding:8px;border:1px solid #e9d5ff">language call stack에 맡기지 않음</td></tr>
+          </table>
+          <p><strong>핵심 질문:</strong> 입력이 정말 tree인가? filesystem hard link, DOM parent pointer, dependency graph처럼 shared node나 cycle 가능성이 있으면 visited/indegree 검증 없는 “tree traversal”은 중복 처리나 무한 loop가 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">5. Tree ADT와 representation invariant</h2>
+          <p><strong>Rooted ordered Tree ADT:</strong> <code>root()</code>, <code>parent(v)</code>, 순서 있는 <code>children(v)</code>, <code>isLeaf(v)</code>, subtree traversal을 제공한다. 저장 주소·index·pointer는 외부 계약이 아니다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1 root:</strong> empty가 아니면 root는 정확히 하나이고 parent가 없다.</li>
+            <li><strong>RI-2 one parent:</strong> 모든 non-root reachable node는 parent가 정확히 하나다.</li>
+            <li><strong>RI-3 acyclic:</strong> 어떤 node도 자기 ancestor가 될 수 없다.</li>
+            <li><strong>RI-4 reachability:</strong> 소유한 모든 node는 root에서 child edge로 정확히 한 번 도달한다. orphan이 없다.</li>
+            <li><strong>RI-5 bidirectional consistency:</strong> parent pointer를 저장한다면 <code>c∈children(p) ⇔ parent(c)=p</code>.</li>
+            <li><strong>RI-6 order:</strong> ordered tree이면 children의 순서는 안정적이고 traversal 의미에 포함된다.</li>
+            <li><strong>RI-7 ownership:</strong> node/value의 수명과 삭제 책임이 하나로 정의되어 dangling·double free가 없다.</li>
+            <li><strong>RI-8 cached metadata:</strong> subtree size/height를 저장한다면 구조 변경 뒤 정의식과 일치한다.</li>
+          </ol>
+          <p>n&gt;0인 tree는 edge가 정확히 n−1개다. root는 indegree 0, 나머지는 indegree 1이므로 합이 n−1이다. 반대로 n개 node가 모두 연결되고 cycle이 없으며 edge가 n−1이면 tree다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">6. 헷갈리는 binary tree 분류</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#f3e8ff"><th style="padding:8px;border:1px solid #e9d5ff">용어</th><th style="padding:8px;border:1px solid #e9d5ff">정의</th><th style="padding:8px;border:1px solid #e9d5ff">아닌 것</th></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Full / proper</td><td style="padding:8px;border:1px solid #e9d5ff">모든 node의 child가 0개 또는 2개</td><td style="padding:8px;border:1px solid #e9d5ff">level이 꽉 찼다는 뜻 아님</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Perfect</td><td style="padding:8px;border:1px solid #e9d5ff">모든 internal은 2 child, 모든 leaf depth 동일</td><td style="padding:8px;border:1px solid #e9d5ff">단순히 balanced인 tree</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Complete</td><td style="padding:8px;border:1px solid #e9d5ff">마지막 전 level은 가득, 마지막은 왼쪽부터 채움</td><td style="padding:8px;border:1px solid #e9d5ff">모든 node가 0/2 child일 필요 없음</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Balanced</td><td style="padding:8px;border:1px solid #e9d5ff">사용한 정의에 따라 height 차이/전체 h=O(log n) 제한</td><td style="padding:8px;border:1px solid #e9d5ff">정의 없이 “좌우가 비슷해 보임”</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Skewed</td><td style="padding:8px;border:1px solid #e9d5ff">대부분 한 child 방향으로 이어져 h≈n−1</td><td style="padding:8px;border:1px solid #e9d5ff">잘못된 tree라는 뜻은 아님</td></tr>
+          </table>
+          <p>Complete binary tree는 heap-style array에서 node i의 children을 <code>2i+1, 2i+2</code>로 저장해 pointer 없이 compact하게 표현할 수 있다. sparse tree에 이 표현을 강제하면 빈 slot이 폭발한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">7. Traversal 정당성: structural induction</h2>
+          <p><strong>Preorder 명제 P(T):</strong> 알고리즘은 T의 모든 node를 정확히 한 번 방문하고 root, 왼쪽 subtree, 오른쪽 subtree 순서를 낸다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>Base:</strong> empty tree는 아무 node도 방문하지 않아 명제가 성립한다.</li>
+            <li><strong>Induction hypothesis:</strong> left/right subtree에서 각각 모든 node를 정확히 한 번 원하는 순서로 방문한다고 가정한다.</li>
+            <li><strong>Step:</strong> root를 한 번 방문한 뒤 left, right 알고리즘을 실행한다. RI의 one-parent·acyclic으로 세 node 집합은 서로 겹치지 않고 합집합이 T 전체이므로 정확히 한 번이다.</li>
+          </ol>
+          <p>Inorder는 root 방문을 두 subtree 사이로, postorder는 뒤로 옮기면 같은 증명을 쓴다. <strong>중요:</strong> one-parent 불변식이 없으면 left/right subtrees가 같은 node를 공유해 “정확히 한 번” 증명이 깨진다.</p>
+          <p><strong>BFS loop invariant:</strong> 매 반복 시작에 queue에는 발견됐지만 미처리인 node만 있고, dequeue 순서는 nondecreasing depth다. depth d node를 처리하며 depth d+1 children을 뒤에 enqueue하므로 기존 d 또는 d+1 뒤에 놓여 순서가 유지된다. tree의 유일 parent로 child는 한 번만 발견된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">8. 직접 구현: 하나의 event stack으로 pre/in/post</h2>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#2e1065;color:#faf5ff;padding:16px;border-radius:10px;font-size:13px"><code>typedef enum { ENTER, BETWEEN, EXIT } Phase;
+typedef struct { NodeId id; Phase phase; } Event;
+
+Status traverse_binary(Tree *t, NodeId root, Visitor *v, Budget b) {
+  Vec&lt;Event&gt; stack = try_reserve(3 * min(t-&gt;size, b.max_nodes));
+  if (!stack.ok) return OOM;
+  stack.push({root, ENTER});
+
+  while (!stack.empty()) {
+    if (v-&gt;cancelled()) return CANCELLED;
+    Event e = stack.pop();
+    if (e.id == NONE) continue;
+    if (++b.events &gt; 3 * b.max_nodes) return LIMIT_EXCEEDED;
+
+    Node *x = checked_node(t, e.id);       // bounds/lifetime 확인
+    if (!x) return INVALID_CHILD;
+    if (e.phase == ENTER) {
+      TRY(v-&gt;pre(x));
+      stack.push({e.id, BETWEEN});
+      stack.push({x-&gt;left, ENTER});
+    } else if (e.phase == BETWEEN) {
+      TRY(v-&gt;in(x));
+      stack.push({e.id, EXIT});
+      stack.push({x-&gt;right, ENTER});
+    } else {
+      TRY(v-&gt;post(x));
+    }
+  }
+  return OK;
+}</code></pre>
+          <p>재귀 call frame의 “왼쪽 전/후, 오른쪽 후” 상태를 명시적 event로 옮겼다. iterator를 pause/resume하거나 cancellation·budget·typed error를 지원하기 쉽다. production에서는 <code>3*n</code>을 곱하기 전에 overflow를 검사하고 필요한 stack peak만 동적으로 확장한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">9. Complexity: 시간은 같아도 공간은 모양을 따른다</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#f3e8ff"><th style="padding:8px;border:1px solid #e9d5ff">순회</th><th style="padding:8px;border:1px solid #e9d5ff">시간</th><th style="padding:8px;border:1px solid #e9d5ff">aux 공간</th><th style="padding:8px;border:1px solid #e9d5ff">지배하는 모양</th></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Recursive DFS</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(n)</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(h) call stack</td><td style="padding:8px;border:1px solid #e9d5ff">skewed depth</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Iterative DFS</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(n)</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(h) explicit stack</td><td style="padding:8px;border:1px solid #e9d5ff">pending siblings/depth</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Level-order BFS</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(n)</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(w)</td><td style="padding:8px;border:1px solid #e9d5ff">maximum level width</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">Morris inorder</td><td style="padding:8px;border:1px solid #e9d5ff">Θ(n) amortized</td><td style="padding:8px;border:1px solid #e9d5ff">O(1)</td><td style="padding:8px;border:1px solid #e9d5ff">temporary pointer threading</td></tr>
+          </table>
+          <p>완전 이진 tree는 h=Θ(log n)이지만 마지막 level의 w=Θ(n)이다. 반대로 chain은 h=Θ(n), w=1이다. 따라서 “BFS와 DFS 모두 O(n)”만 말하면 memory failure를 예측할 수 없다.</p>
+          <p><strong>Morris 주의:</strong> predecessor의 null right pointer를 임시 thread로 바꾸고 복구한다. concurrent reader, immutable/persistent tree, callback 예외·취소가 있는 production에서는 원상 복구 보장이 어려워 O(1) 공간만 보고 선택하면 안 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">10. Representation과 memory/locality</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#f3e8ff"><th style="padding:7px;border:1px solid #e9d5ff">표현</th><th style="padding:7px;border:1px solid #e9d5ff">장점</th><th style="padding:7px;border:1px solid #e9d5ff">비용·적합한 상황</th></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">개별 pointer node</td><td style="padding:7px;border:1px solid #e9d5ff">삽입·subtree relink 직관적</td><td style="padding:7px;border:1px solid #e9d5ff">allocator·pointer bytes·cache miss; mutable tree</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">Arena + index</td><td style="padding:7px;border:1px solid #e9d5ff">compact, bounds 검사, serialization 쉬움</td><td style="padding:7px;border:1px solid #e9d5ff">arena relocation/삭제 정책; AST·batch build</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">child vector</td><td style="padding:7px;border:1px solid #e9d5ff">일반 ordered tree 표현 자연스러움</td><td style="padding:7px;border:1px solid #e9d5ff">node당 allocation/capacity; directory·DOM</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">first-child / next-sibling</td><td style="padding:7px;border:1px solid #e9d5ff">node당 pointer 2개로 arbitrary degree</td><td style="padding:7px;border:1px solid #e9d5ff">k번째 child O(k), sibling chain locality</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">Implicit heap array</td><td style="padding:7px;border:1px solid #e9d5ff">pointer 0, level-order contiguous</td><td style="padding:7px;border:1px solid #e9d5ff">sparse tree hole 폭발; complete tree/heap</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">11. 실측: O(n) 내부의 4.31배와 queue 100만 개</h2>
+          <p>Apple clang 21.0.0, C11 <code>-O3 -Wall -Wextra -Werror</code>, 5회 실행 중앙값. 2,097,151-node perfect binary tree를 동일한 BFS로 읽되 physical node 배치만 바꿨다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#f3e8ff"><th style="padding:8px;border:1px solid #e9d5ff">측정</th><th style="padding:8px;border:1px solid #e9d5ff">결과</th><th style="padding:8px;border:1px solid #e9d5ff">의미</th></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">level-order contiguous nodes</td><td style="padding:8px;border:1px solid #e9d5ff">3.552ms</td><td style="padding:8px;border:1px solid #e9d5ff">BFS 방문 순서와 physical layout 일치</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">physical addresses shuffled</td><td style="padding:8px;border:1px solid #e9d5ff">15.300ms</td><td style="padding:8px;border:1px solid #e9d5ff">같은 Θ(n), 약 4.31× 느린 pointer chase</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">BFS queue peak</td><td style="padding:8px;border:1px solid #e9d5ff">1,048,576 pointers</td><td style="padding:8px;border:1px solid #e9d5ff">마지막 level 폭 = Θ(n)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e9d5ff">deep chain iterative DFS</td><td style="padding:8px;border:1px solid #e9d5ff">1,000,000 nodes PASS</td><td style="padding:8px;border:1px solid #e9d5ff">call stack 없이 explicit stack peak 1</td></tr>
+          </table>
+          <p><strong>추가 검증:</strong> 4,095-node tree에서 recursive/iterative preorder·inorder·postorder sequence가 정확히 같았다. duplicate child로 만든 multi-parent와 leaf→root cycle은 validator가 거부했고 전체 suite는 ASan/UBSan을 통과했다.</p>
+          <p><strong>benchmark 주의:</strong> cold/warm cache, allocator, node size, traversal order, callback work를 기록한다. callback이 I/O를 하면 4배 locality 차이는 가려질 수 있다. queue allocation/build 시간을 포함한 end-to-end와 순수 visit loop를 분리한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">12. Error handling과 adversarial input</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#f3e8ff"><th align="left" style="padding:7px;border:1px solid #e9d5ff">실패</th><th align="left" style="padding:7px;border:1px solid #e9d5ff">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #e9d5ff">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">depth 초과</td><td style="padding:7px;border:1px solid #e9d5ff">parse 중 limit, iterative traversal, typed error</td><td style="padding:7px;border:1px solid #e9d5ff">recursion limit을 무작정 크게 설정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">node/fan-out 폭발</td><td style="padding:7px;border:1px solid #e9d5ff">bytes·nodes·children·frontier budget</td><td style="padding:7px;border:1px solid #e9d5ff">BFS queue가 RAM을 다 쓸 때까지 허용</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">cycle/shared child</td><td style="padding:7px;border:1px solid #e9d5ff">indegree+color/visited 검증 후 commit</td><td style="padding:7px;border:1px solid #e9d5ff">tree라고 믿고 무한 순회·double free</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">stack/queue OOM</td><td style="padding:7px;border:1px solid #e9d5ff">reserve 사전 검사, 원본 미변경, partial output 정책</td><td style="padding:7px;border:1px solid #e9d5ff">push 실패 무시 후 node 누락</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">visitor callback 실패</td><td style="padding:7px;border:1px solid #e9d5ff">즉시 중단·오류 전파·transaction/rollback 계약</td><td style="padding:7px;border:1px solid #e9d5ff">일부 side effect 뒤 성공 반환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">동시 구조 변경</td><td style="padding:7px;border:1px solid #e9d5ff">snapshot/version/lock 또는 fail-fast iterator</td><td style="padding:7px;border:1px solid #e9d5ff">dangling child를 계속 방문</td></tr>
+            <tr><td style="padding:7px;border:1px solid #e9d5ff">size/depth counter overflow</td><td style="padding:7px;border:1px solid #e9d5ff">증가·곱셈 전 checked arithmetic</td><td style="padding:7px;border:1px solid #e9d5ff">wrap된 작은 allocation에 쓰기</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">13. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Validate at boundary:</strong> untrusted nested input은 구조를 business object로 공개하기 전에 node/depth/edge/ownership을 검증한다.</li>
+            <li><strong>Name the convention:</strong> height edge/node 기준, child ordering, duplicate ID, empty tree를 API 문서에 고정한다.</li>
+            <li><strong>Choose traversal by dependency:</strong> parent-before-child는 pre, child-before-parent는 post, nearest-depth는 BFS다. 익숙해서 DFS를 쓰지 않는다.</li>
+            <li><strong>Bound the frontier:</strong> DFS h와 BFS w를 입력 SLA에 포함하고 metric으로 max depth/frontier를 낸다.</li>
+            <li><strong>Separate traversal from effects:</strong> visitor는 순회와 업무 동작을 분리하되 callback 실패·취소·mutation 계약을 명시한다.</li>
+            <li><strong>Prefer arena for batch trees:</strong> AST·query plan처럼 함께 생성/해제되는 구조는 index/arena로 locality와 lifetime을 단순화한다.</li>
+            <li><strong>Delete postorder:</strong> owning pointer tree는 children을 먼저 해제한 뒤 parent를 해제해 use-after-free를 피한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">14. 테스트 전략</h2>
+          <ul style="padding-left:22px">
+            <li><strong>최소 모양:</strong> empty, one node, only-left, only-right, perfect, wide star, deep chain.</li>
+            <li><strong>Golden order:</strong> 작은 labeled tree의 pre/in/post/level sequence를 손으로 고정한다.</li>
+            <li><strong>Differential:</strong> safe depth의 random tree에서 recursive와 iterative 결과를 비교한다.</li>
+            <li><strong>Property:</strong> output length n, ID set 동일, duplicate 없음, parent-child order property를 검사한다.</li>
+            <li><strong>Malformed:</strong> out-of-range child, self-loop, ancestor cycle, duplicate parent, orphan, duplicate sibling edge.</li>
+            <li><strong>Failure:</strong> stack/queue N번째 allocation 실패, visitor N번째 error, cancel, counter boundary.</li>
+            <li><strong>Sanitizer:</strong> 구조 삭제·error cleanup을 ASan/UBSan/LeakSanitizer로 확인한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">15. 45분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>8분:</strong> 예제 tree의 용어, depth, height, 네 순서를 손으로 쓴다.</li>
+            <li><strong>10분:</strong> arena-index binary tree와 RI validator를 작성한다.</li>
+            <li><strong>10분:</strong> event stack으로 pre/in/post를 한 번에 구현하고 recursive oracle과 비교한다.</li>
+            <li><strong>8분:</strong> ring queue BFS에서 frontier limit·OOM·cancel을 처리한다.</li>
+            <li><strong>9분:</strong> chain/perfect/wide/adversarial 입력의 peak stack/queue와 locality를 측정한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#f3e8ff;border-radius:10px"><strong>Q1. DFS와 BFS의 시간·공간 복잡도를 tree 모양까지 포함해 설명하세요.</strong><br>둘 다 각 node/edge를 한 번 보므로 Θ(n). DFS는 call/explicit stack Θ(h), BFS는 queue Θ(w). perfect tree에서 h=Θ(log n), w=Θ(n), chain에서 h=Θ(n), w=1 반례와 recursion overflow·queue OOM 정책을 함께 말한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#f3e8ff;border-radius:10px"><strong>Q2. preorder/inorder/postorder를 언제 쓰며 inorder는 항상 정렬인가요?</strong><br>root 방문 시점으로 정의하고 pre=serialize/propagate, post=aggregate/free, inorder=binary tree의 left-node-right다. sorted는 BST ordering invariant가 추가될 때만 성립하며 일반 binary tree에는 보장되지 않는다.</div>
+          <div style="padding:16px;background:#f3e8ff;border-radius:10px"><strong>Q3. 외부 입력이 tree인지 어떻게 검증하나요?</strong><br>root 하나, non-root indegree 1, child bounds, acyclic color DFS, root reachability, edge n−1을 제시한다. node/depth/fan-out budget과 iterative 검증, commit 전 실패 atomicity, cycle/multi-parent 최소 반례까지 설명한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>root depth와 leaf height는 이 자료의 convention에서 각각 얼마인가?</li>
+            <li>n node tree의 edge가 n−1인 이유를 indegree 합으로 설명하라.</li>
+            <li>postorder가 subtree size 계산과 node 해제에 맞는 이유는?</li>
+            <li>일반 3-ary ordered tree에서 inorder가 유일하지 않은 이유는?</li>
+            <li>perfect tree와 complete tree의 차이는?</li>
+            <li>shared child 하나가 traversal proof와 memory free를 어떻게 깨뜨리는가?</li>
+            <li>Day 8의 locality가 pointer tree traversal에서 재등장하는 지점은?</li>
+            <li>Day 13 bounded queue 원칙을 BFS에 적용하면 어떤 지표와 오류가 필요한가?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) 0/0. 2) root 0+non-root 각 1. 3) child 결과·수명을 먼저 처리. 4) node를 어느 child 사이에 둘지 표준 없음. 5) perfect는 모든 level 가득, complete는 마지막만 왼쪽부터 일부 가능. 6) 중복 방문·double free. 7) 흩어진 node pointer chase/cache miss. 8) max frontier·rejection/backpressure/OOM.</div>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">18. 다음 날 연결</h2>
+          <p>Day 23은 <strong>binary search tree와 invariant</strong>다. 오늘의 구조 RI에 <code>left keys &lt; node key &lt; right keys</code>라는 ordering contract를 더해 search/insert/delete O(h), inorder sorted proof, duplicate policy와 skewed worst case를 다룬다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#7e22ce">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/376714cc85c6c784d90eec9c575ec027_MIT6_006S20_lec6.pdf" style="color:#7e22ce">MIT 6.006 — Lecture 6: Binary Trees I</a>: root/leaf/depth/height, traversal order와 Θ(n) 분석.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/e215840fd7b0e8cb07916a65c17252b2_MIT6_006S20_r06.pdf" style="color:#7e22ce">MIT 6.006 — Recitation 6: Binary Trees</a>: binary node 표현, parent/child/ancestor와 height O(log n) 동기.</li>
+            <li><a href="https://web.stanford.edu/class/archive/cs/cs106b/cs106b.1262/lectures/22-trees/" style="color:#7e22ce">Stanford CS106B — Trees</a>: pointer node 표현과 pre/in/post/level-order traversal 예제.</li>
+            <li><a href="https://xlinux.nist.gov/dads/HTML/tree.html" style="color:#7e22ce">NIST Dictionary of Algorithms and Data Structures — Tree</a>: recursive tree 정의와 graph tree·ordered data structure 구분.</li>
+            <li><a href="https://xlinux.nist.gov/dads/HTML/depth.html" style="color:#7e22ce">NIST DADS — Depth</a>: root depth 0과 parent 기반 재귀 정의.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/196a95604877d326c6586e60477b59d4_MIT6_006S20_lec9.pdf" style="color:#7e22ce">MIT 6.006 — Lecture 9: Breadth-First Search</a>: frontier를 level 순으로 확장하는 BFS.</li>
+            <li><a href="https://docs.python.org/3/library/sys.html#sys.setrecursionlimit" style="color:#7e22ce">Python Standard Library — sys.setrecursionlimit</a>: C stack overflow 방지를 위한 recursion limit과 과도한 상향 위험.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.VecDeque.html" style="color:#7e22ce">Rust Standard Library — VecDeque</a>: ring-buffer queue의 front pop/back push와 capacity/error-aware API.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·실행 검증: 2026-08-23 Asia/Seoul · 실측은 arm64 macOS의 교육용 C11 benchmark이며 실제 workload의 callback·allocator·cache 환경을 대체하지 않는다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
