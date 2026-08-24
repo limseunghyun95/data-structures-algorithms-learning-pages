@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 23 · binary search tree와 invariant</title>
+</head>
+<body style="margin:0;background:#0f172a;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0f172a">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#064e3b;color:#ecfdf5">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 4 / DAY 23</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">BST의 속도는 이름이 아니라<br>전역 구간과 높이가 만든다</h1>
+          <p style="margin:0;color:#a7f3d0">Ordered Map ADT → global invariant → search/insert/delete proof → shape attack → locality · 135분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #059669;background:#d1fae5;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            Binary Search Tree는 모든 node가 담당하는 <em>전역 key interval</em>을 지킬 때만 탐색이 맞고, 연산 비용은 O(h)이므로 balance를 보장하지 않으면 정렬 입력 하나로 O(n) linked list가 된다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>BST</strong></td><td style="padding:8px;border:1px solid #a7f3d0">Binary Search Tree. 각 node의 왼쪽 <em>전체 subtree</em>는 더 작은 key, 오른쪽 전체 subtree는 더 큰 key를 갖는 binary tree.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Key / value</strong></td><td style="padding:8px;border:1px solid #a7f3d0">정렬·검색에 쓰는 식별 기준 / key와 연결된 업무 데이터. key는 같아도 value를 교체할 수 있다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Comparator</strong></td><td style="padding:8px;border:1px solid #a7f3d0">두 key를 less/equal/greater로 판정하는 함수. tree의 모든 연산이 같은 의미를 써야 한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Total order</strong></td><td style="padding:8px;border:1px solid #a7f3d0">임의의 두 key를 일관되게 비교할 수 있고, 반대칭·추이성·동치 일관성을 만족하는 순서.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Ordering invariant</strong></td><td style="padding:8px;border:1px solid #a7f3d0">모든 node k에 대해 left의 모든 key&lt;k&lt;right의 모든 key라는 항상 참이어야 하는 조건.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Search path</strong></td><td style="padding:8px;border:1px solid #a7f3d0">root에서 비교 결과에 따라 한 child씩 선택해 내려가는 경로.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Height h</strong></td><td style="padding:8px;border:1px solid #a7f3d0">여기서는 root에서 가장 먼 leaf까지 edge 수. 연산이 보는 node 수는 최대 h+1이다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Balanced / skewed</strong></td><td style="padding:8px;border:1px solid #a7f3d0">높이가 O(log n)으로 제한된 상태 / 한 방향 chain에 가까워 h≈n−1인 상태.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Minimum / maximum</strong></td><td style="padding:8px;border:1px solid #a7f3d0">가장 왼쪽 / 가장 오른쪽 node. 각각 더 작은/큰 child가 없을 때 도착한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Predecessor / successor</strong></td><td style="padding:8px;border:1px solid #a7f3d0">정렬 순서상 바로 이전 / 다음 key. successor는 delete와 range iteration의 핵심이다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Lower bound</strong></td><td style="padding:8px;border:1px solid #a7f3d0">주어진 key 이상인 첫 entry. exact match보다 ordered map다운 연산이다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Transplant</strong></td><td style="padding:8px;border:1px solid #a7f3d0">삭제할 subtree root를 다른 subtree root로 부모와 다시 연결하는 조작.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Duplicate policy</strong></td><td style="padding:8px;border:1px solid #a7f3d0">같은 key를 reject, value replace, count 누적, 한쪽에 저장 중 무엇으로 처리할지 정한 계약.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0"><strong>Augmentation</strong></td><td style="padding:8px;border:1px solid #a7f3d0">subtree size·sum·max 같은 metadata를 node에 추가해 rank/select 등 새 연산을 지원하는 기법.</td></tr>
+          </table>
+          <div style="margin-top:14px;padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>가장 중요한 문장:</strong> “left child &lt; parent”가 아니라 “left <em>subtree의 모든 key</em> &lt; parent”다. 로컬 비교만 하는 validator는 잘못된 tree를 통과시킨다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">2. 한 그림으로 보는 key interval</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:6px;text-align:center">
+            <tr><td colspan="4" style="padding:12px;background:#064e3b;color:white;border-radius:10px"><strong>8 · 허용 구간 (−∞, +∞)</strong></td></tr>
+            <tr><td colspan="2" style="color:#047857;font-weight:800">key &lt; 8 ↙</td><td colspan="2" style="color:#047857;font-weight:800">↘ key &gt; 8</td></tr>
+            <tr><td colspan="2" style="padding:11px;background:#d1fae5;border-radius:9px"><strong>3 · (−∞, 8)</strong></td><td colspan="2" style="padding:11px;background:#d1fae5;border-radius:9px"><strong>10 · (8, +∞)</strong></td></tr>
+            <tr><td style="color:#047857">↙</td><td style="color:#047857">↘</td><td style="color:#047857">↙</td><td style="color:#047857">↘</td></tr>
+            <tr><td style="padding:10px;background:#ecfdf5;border-radius:9px"><strong>1</strong><br>(−∞,3)</td><td style="padding:10px;background:#ecfdf5;border-radius:9px"><strong>6</strong><br>(3,8)</td><td style="padding:10px;background:#ecfdf5;border-radius:9px"><strong>9</strong><br>(8,10)</td><td style="padding:10px;background:#ecfdf5;border-radius:9px"><strong>14</strong><br>(10,+∞)</td></tr>
+          </table>
+          <p>root에서 왼쪽으로 가면 upper bound가, 오른쪽으로 가면 lower bound가 갱신된다. 이 구간이 search의 “버려도 되는 영역”과 validator의 전역 문맥을 동시에 제공한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> 예약 시간을 key로 저장하고 exact lookup, 새 예약, 취소, “t 이상인 다음 예약”, [lo, hi] 범위 조회를 제공한다. 중복 시간은 replace가 아니라 reject하며, 정렬 입력과 외부 comparator도 들어올 수 있다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th align="left" style="padding:8px;border:1px solid #a7f3d0">질문</th><th align="left" style="padding:8px;border:1px solid #a7f3d0">뽑아낼 계약</th><th align="left" style="padding:8px;border:1px solid #a7f3d0">설계 영향</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">exact만 필요한가?</td><td style="padding:8px;border:1px solid #a7f3d0">equality lookup 빈도</td><td style="padding:8px;border:1px solid #a7f3d0">range가 없으면 hash map 후보</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">range/successor가 필요한가?</td><td style="padding:8px;border:1px solid #a7f3d0">ordered iteration</td><td style="padding:8px;border:1px solid #a7f3d0">ordered map/B-tree 계열</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">update가 얼마나 잦은가?</td><td style="padding:8px;border:1px solid #a7f3d0">insert/delete : read 비율</td><td style="padding:8px;border:1px solid #a7f3d0">sorted array의 O(n) shift 비용</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">입력 순서를 통제하는가?</td><td style="padding:8px;border:1px solid #a7f3d0">sorted/adversarial 가능성</td><td style="padding:8px;border:1px solid #a7f3d0">plain BST 금지, balancing 필요</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">key가 변할 수 있는가?</td><td style="padding:8px;border:1px solid #a7f3d0">immutability/comparator stability</td><td style="padding:8px;border:1px solid #a7f3d0">remove→modify→reinsert 계약</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">RAM/cache/page가 병목인가?</td><td style="padding:8px;border:1px solid #a7f3d0">node bytes와 locality</td><td style="padding:8px;border:1px solid #a7f3d0">arena, B-tree, sorted array 비교</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">4. Architecture / decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#047857;color:white;border-radius:9px"><strong>① Operation contract</strong></td><td style="padding:13px;background:#ecfdf5">exact / predecessor / successor / range / rank / mutation?</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ exact만 많음 → hash map도 비교</td></tr>
+            <tr><td style="padding:13px;background:#047857;color:white;border-radius:9px"><strong>② Order contract</strong></td><td style="padding:13px;background:#ecfdf5">total order, duplicate, null/NaN, locale, key mutation 정책</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 입력 shape를 신뢰하지 않음</td></tr>
+            <tr><td style="padding:13px;background:#047857;color:white;border-radius:9px"><strong>③ Height guarantee</strong></td><td style="padding:13px;background:#ecfdf5">plain BST 학습용 / AVL·Red-Black production / B-tree page용</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ representation과 실패 예산</td></tr>
+            <tr><td style="padding:13px;background:#047857;color:white;border-radius:9px"><strong>④ Implement</strong></td><td style="padding:13px;background:#ecfdf5">iterative path, bounds validator, failure-atomic link, safe delete</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ p99와 구조 지표를 함께 관측</td></tr>
+            <tr><td style="padding:13px;background:#064e3b;color:white;border-radius:9px"><strong>⑤ Observe / rebuild</strong></td><td style="padding:13px;background:#ecfdf5">size, height, comparisons/op, rotations, allocations, cache misses</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">5. Ordered Map ADT와 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>get(k)</code>, <code>put(k,v)</code>, <code>remove(k)</code>, <code>min/max</code>, <code>lowerBound(k)</code>, <code>successor(k)</code>, <code>range(lo,hi)</code>. 외부는 node 주소나 tree shape를 관찰하지 않는다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1 structural tree:</strong> root는 parent 없음, non-root는 parent 하나, cycle/shared child/orphan 없음.</li>
+            <li><strong>RI-2 global order:</strong> node x의 left 모든 key &lt; key(x) &lt; right 모든 key.</li>
+            <li><strong>RI-3 comparator:</strong> 모든 연산은 같은 total order를 사용하고 실행 중 의미가 바뀌지 않는다.</li>
+            <li><strong>RI-4 duplicate:</strong> 이 구현은 unique key이며 equal put은 value replace, size 불변이다.</li>
+            <li><strong>RI-5 parent symmetry:</strong> <code>x.left=y ⇒ y.parent=x</code>, right도 동일하다.</li>
+            <li><strong>RI-6 ownership:</strong> reachable node만 소유하고 삭제 후 dangling pointer/double free가 없다.</li>
+            <li><strong>RI-7 size:</strong> header size는 root에서 도달 가능한 node 수와 같다.</li>
+            <li><strong>RI-8 augmentation:</strong> subtree size를 저장하면 <code>1+size(left)+size(right)</code>다.</li>
+          </ol>
+          <p><strong>중복은 사소하지 않다.</strong> “equal은 오른쪽” 정책을 쓰면 validator 구간을 [lo, hi)처럼 바꾸고 successor·count·delete semantics도 맞춰야 한다. 실무 map은 보통 key 하나에 value 하나를 두고 equal put을 replace한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">6. 최소 반례: local validator는 왜 틀리는가</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:6px;text-align:center">
+            <tr><td colspan="3" style="padding:10px;background:#7f1d1d;color:white;border-radius:8px"><strong>8</strong></td></tr>
+            <tr><td colspan="2" style="padding:10px;background:#fee2e2"><strong>3</strong></td><td style="padding:10px;background:#fee2e2"><strong>10</strong></td></tr>
+            <tr><td style="padding:8px"></td><td style="padding:10px;background:#fecaca"><strong>9 ← 위반</strong></td><td style="padding:8px"></td></tr>
+          </table>
+          <p>9&gt;3이라 부모 3과의 local 비교는 통과한다. 그러나 9는 root 8의 left subtree에 있으므로 9&lt;8이어야 한다. 올바른 validator는 root에서 (−∞,+∞), left로 (−∞,8), 다시 right로 (3,8)을 전달해 9를 거부한다.</p>
+          <p><strong>대안:</strong> inorder가 strictly increasing인지 검사해도 unique-key BST ordering을 확인할 수 있다. 단, cycle·shared node·parent link·size는 별도 검사가 필요하다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">7. Search 정당성: 버린 subtree에 답이 없음을 증명하라</h2>
+          <p><strong>Loop invariant:</strong> 반복 시작 시 target key가 tree에 존재한다면 현재 node가 root인 subtree 안에 있다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>초기화:</strong> 현재 node는 전체 tree root이므로 참이다.</li>
+            <li><strong>유지:</strong> target&lt;current면 global RI에 의해 current와 right subtree의 모든 key는 target이 아니다. left만 남겨도 invariant가 유지된다. target&gt;current는 대칭이다.</li>
+            <li><strong>종료:</strong> equality면 정확한 entry를 찾았다. null에 닿으면 후보 subtree가 empty이므로 존재하지 않는다.</li>
+          </ol>
+          <p>비교 한 번마다 key 범위를 줄이지만 node 수가 절반이 된다는 보장은 없다. 반으로 줄어드는 것은 <em>balance</em>가 추가로 보장될 때뿐이다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">8. Insert와 duplicate contract</h2>
+          <p>search와 같은 path를 따라 null child에 도착한 뒤 새 leaf를 연결한다. 그 null이 담당하던 (lo,hi) 구간 안에 key가 있다는 path invariant 때문에 새 leaf도 전역 RI를 보존한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">equal key 정책</th><th style="padding:8px;border:1px solid #a7f3d0">장점</th><th style="padding:8px;border:1px solid #a7f3d0">반드시 정할 것</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">Replace value</td><td style="padding:8px;border:1px solid #a7f3d0">Map semantics 단순</td><td style="padding:8px;border:1px solid #a7f3d0">old value 반환/해제 책임</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">Reject</td><td style="padding:8px;border:1px solid #a7f3d0">예약·unique index에 적합</td><td style="padding:8px;border:1px solid #a7f3d0">typed DUPLICATE 오류</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">Count/list in value</td><td style="padding:8px;border:1px solid #a7f3d0">tree key는 unique 유지</td><td style="padding:8px;border:1px solid #a7f3d0">value collection lifetime</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">Equal to one side</td><td style="padding:8px;border:1px solid #a7f3d0">구현 가능</td><td style="padding:8px;border:1px solid #a7f3d0">구간 경계·rotation 후 정책 복잡</td></tr>
+          </table>
+          <p><strong>Failure atomicity:</strong> node allocation과 key/value copy를 먼저 성공시킨 뒤 마지막에 parent child pointer 하나를 바꾼다. OOM 전에 tree를 연결하면 rollback과 RI 복구가 어려워진다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">9. Delete: 두 child가 있을 때 successor를 쓰는 이유</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">상태</th><th style="padding:8px;border:1px solid #a7f3d0">조작</th><th style="padding:8px;border:1px solid #a7f3d0">안전 근거</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">0 child</td><td style="padding:8px;border:1px solid #a7f3d0">parent link를 null로</td><td style="padding:8px;border:1px solid #a7f3d0">subtree 제거만 일어남</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">1 child</td><td style="padding:8px;border:1px solid #a7f3d0">child를 transplant</td><td style="padding:8px;border:1px solid #a7f3d0">child subtree가 같은 구간 안</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">2 children</td><td style="padding:8px;border:1px solid #a7f3d0">right subtree minimum인 successor로 대체</td><td style="padding:8px;border:1px solid #a7f3d0">successor는 left child가 없고 사이 key가 없음</td></tr>
+          </table>
+          <p>successor y는 삭제 node z보다 크고 z.right의 나머지 key 이하이므로 z의 자리를 맡을 수 있다. y가 z의 바로 오른쪽 child가 아니면 y.right를 y의 원래 자리에 transplant한 뒤 y를 z 자리에 옮긴다. parent pointer와 augmentation을 바닥부터 갱신해야 한다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #fca5a5;border-radius:10px"><strong>Node identity 함정:</strong> successor의 key/value만 z에 복사하면 외부가 node handle을 보유할 때 “같은 node의 key가 바뀜” 문제가 생긴다. node 주소를 API에서 숨기거나 iterator invalidation 계약을 명시하라.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">10. 직접 구현: iterative put과 bounds validator</h2>
+          <pre style="padding:16px;background:#111827;color:#e5e7eb;border-radius:10px;overflow:auto;font-size:12px;line-height:1.55"><code>PutResult put(Tree *t, Key k, Value v) {
+  Node *parent = NULL, *x = t-&gt;root;
+  int cmp = 0;
+  while (x != NULL) {
+    cmp = compare(k, x-&gt;key);
+    if (cmp == 0) { replace_value(x, v); return REPLACED; }
+    parent = x;
+    x = cmp &lt; 0 ? x-&gt;left : x-&gt;right;
+  }
+
+  Node *z = try_make_node(k, v);       // 아직 tree 불변
+  if (z == NULL) return OUT_OF_MEMORY;
+  z-&gt;parent = parent;
+  if (parent == NULL) t-&gt;root = z;
+  else if (cmp &lt; 0) parent-&gt;left = z; // 마지막 commit point
+  else parent-&gt;right = z;
+  t-&gt;size++;
+  return INSERTED;
+}
+
+bool ordered(Node *x, Bound lo, Bound hi) {
+  if (x == NULL) return true;
+  if ((lo.set &amp;&amp; compare(lo.key, x-&gt;key) &gt;= 0) ||
+      (hi.set &amp;&amp; compare(x-&gt;key, hi.key) &gt;= 0)) return false;
+  return ordered(x-&gt;left, lo, bound(x-&gt;key)) &amp;&amp;
+         ordered(x-&gt;right, bound(x-&gt;key), hi);
+}</code></pre>
+          <p>production validator는 위 ordering뿐 아니라 visited set으로 cycle/shared node, parent symmetry, reachable count와 size를 함께 검사한다. 깊이가 untrusted면 validator도 explicit stack을 써야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">11. Complexity: O(log n)이 아니라 O(h)</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">연산</th><th style="padding:8px;border:1px solid #a7f3d0">시간</th><th style="padding:8px;border:1px solid #a7f3d0">추가 공간</th><th style="padding:8px;border:1px solid #a7f3d0">비고</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">get/put/remove</td><td style="padding:8px;border:1px solid #a7f3d0">O(h)</td><td style="padding:8px;border:1px solid #a7f3d0">iterative O(1), recursive O(h)</td><td style="padding:8px;border:1px solid #a7f3d0">balance면 O(log n), skew면 O(n)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">min/max</td><td style="padding:8px;border:1px solid #a7f3d0">O(h)</td><td style="padding:8px;border:1px solid #a7f3d0">O(1)</td><td style="padding:8px;border:1px solid #a7f3d0">한 방향으로 이동</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">successor</td><td style="padding:8px;border:1px solid #a7f3d0">O(h) worst</td><td style="padding:8px;border:1px solid #a7f3d0">parent pointer면 O(1)</td><td style="padding:8px;border:1px solid #a7f3d0">전체 inorder iteration은 O(n), step amortized O(1)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">range + k outputs</td><td style="padding:8px;border:1px solid #a7f3d0">O(h+k)</td><td style="padding:8px;border:1px solid #a7f3d0">O(h) 또는 iterator</td><td style="padding:8px;border:1px solid #a7f3d0">lower bound 후 successor</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">validate</td><td style="padding:8px;border:1px solid #a7f3d0">Θ(n)</td><td style="padding:8px;border:1px solid #a7f3d0">O(n) visited + O(h) stack</td><td style="padding:8px;border:1px solid #a7f3d0">untrusted graph까지 안전하게</td></tr>
+          </table>
+          <p>plain BST에는 연산을 반복한다고 높이가 저절로 좋아지는 amortized 보장이 없다. 정렬 key n개를 넣으면 1+2+…+n=Θ(n²) 비교가 될 수 있다. 균형 tree는 회전/색/높이 invariant로 h=O(log n)을 강제한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">12. 실측: 같은 n, 19번과 1,048,575번</h2>
+          <p>Apple clang 21.0.0, C11 <code>-O3 -Wall -Wextra -Werror</code>. 1,048,575개 unique int key와 100만 random hit query, 각 실행 내부 5회 중앙값을 다시 5회 실행한 대표 중앙값이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#d1fae5"><th style="padding:8px;border:1px solid #a7f3d0">측정</th><th style="padding:8px;border:1px solid #a7f3d0">결과</th><th style="padding:8px;border:1px solid #a7f3d0">해석</th></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">balanced BST 평균 비교</td><td style="padding:8px;border:1px solid #a7f3d0">19.003 / query</td><td style="padding:8px;border:1px solid #a7f3d0">높이 약 log₂n</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">balanced arena BST</td><td style="padding:8px;border:1px solid #a7f3d0">150.639ms</td><td style="padding:8px;border:1px solid #a7f3d0">child index 추적과 node load</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">sorted contiguous array</td><td style="padding:8px;border:1px solid #a7f3d0">77.823ms</td><td style="padding:8px;border:1px solid #a7f3d0">같은 logarithmic search, 약 1.94× 빠름</td></tr>
+            <tr><td style="padding:8px;border:1px solid #a7f3d0">skewed BST 마지막 key</td><td style="padding:8px;border:1px solid #a7f3d0">1,048,575 comparisons</td><td style="padding:8px;border:1px solid #a7f3d0">shape 하나로 O(n)</td></tr>
+          </table>
+          <p><strong>검증:</strong> 20만 random put/delete를 1,024-key reference model과 differential test했고, global interval 위반 반례를 reject했다. parent·bounds·reachable count RI와 ASan/UBSan을 통과했다.</p>
+          <p><strong>benchmark 주의:</strong> array는 insertion shift가 O(n)이고 BST는 O(h)이므로 lookup 숫자만으로 전체 workload 승자를 정하면 안 된다. key 비교 비용, hit/miss 비율, allocator, cache warmness, node 크기와 update 비율을 함께 기록하라.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">13. Representation과 memory/locality</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">표현</th><th style="padding:7px;border:1px solid #a7f3d0">좋은 점</th><th style="padding:7px;border:1px solid #a7f3d0">실제 비용</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">heap pointer node</td><td style="padding:7px;border:1px solid #a7f3d0">rotation/relink 직관적</td><td style="padding:7px;border:1px solid #a7f3d0">node당 allocation, 2~3 pointers, cache miss</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">arena + index</td><td style="padding:7px;border:1px solid #a7f3d0">compact, bounds check, batch lifetime</td><td style="padding:7px;border:1px solid #a7f3d0">delete free-list/generation, relocation 정책</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">sorted array</td><td style="padding:7px;border:1px solid #a7f3d0">최고 locality, binary search, 작은 bytes</td><td style="padding:7px;border:1px solid #a7f3d0">중간 insert/delete Θ(n)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">B-tree node array</td><td style="padding:7px;border:1px solid #a7f3d0">여러 key를 한 cache line/page에</td><td style="padding:7px;border:1px solid #a7f3d0">node 내부 비교·split/merge 복잡도</td></tr>
+          </table>
+          <p>Rust 표준 문서도 single-element heap node BST는 비교마다 indirection/cache miss가 날 수 있다고 설명하고, B-tree는 한 node에 여러 element를 연속 배치해 allocation과 cache miss를 줄이는 절충이라고 밝힌다. “비교 횟수 최소”와 “wall-clock 최소”는 다르다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">14. Error handling과 adversarial input</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">실패</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">sorted/adversarial insert</td><td style="padding:7px;border:1px solid #a7f3d0">AVL/RB, height budget, bulk build</td><td style="padding:7px;border:1px solid #a7f3d0">평균적으로 섞일 것이라 가정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">comparator 비추이/변경</td><td style="padding:7px;border:1px solid #a7f3d0">total-order contract, immutable key, debug property test</td><td style="padding:7px;border:1px solid #a7f3d0">조회 때마다 locale/clock 의존</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">NaN/null/invalid UTF-8</td><td style="padding:7px;border:1px solid #a7f3d0">boundary normalize/reject, ordering 명시</td><td style="padding:7px;border:1px solid #a7f3d0">언어의 partial comparison을 강제 unwrap</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">insert OOM</td><td style="padding:7px;border:1px solid #a7f3d0">allocate/copy 후 single-link commit</td><td style="padding:7px;border:1px solid #a7f3d0">먼저 size/parent를 바꾸고 실패</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">missing delete</td><td style="padding:7px;border:1px solid #a7f3d0">NOT_FOUND 또는 false를 계약대로 반환</td><td style="padding:7px;border:1px solid #a7f3d0">null dereference/size 감소</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">deep recursion</td><td style="padding:7px;border:1px solid #a7f3d0">iterative path/validator, depth limit</td><td style="padding:7px;border:1px solid #a7f3d0">plain BST 높이를 log n으로 단정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">concurrent mutation</td><td style="padding:7px;border:1px solid #a7f3d0">lock/version/snapshot, iterator invalidation</td><td style="padding:7px;border:1px solid #a7f3d0">rotation/delete 중 lock-free read</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">metadata overflow</td><td style="padding:7px;border:1px solid #a7f3d0">checked add, 충분한 width, rollback</td><td style="padding:7px;border:1px solid #a7f3d0">wrap된 subtree size로 rank 수행</td></tr>
+          </table>
+          <p>Rust <code>BTreeMap</code> 문서는 map 안에서 key의 상대 ordering이 바뀌는 것을 logic error로 규정한다. 언어가 memory safety를 지켜도 잘못된 결과, panic, leak, non-termination 같은 map 내부 실패는 남을 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">15. 테스트 전략</h2>
+          <ul style="padding-left:22px">
+            <li><strong>최소 shape:</strong> empty, one node, root 삭제, only-left/right, two-child successor가 직계/깊은 경우.</li>
+            <li><strong>최소 반례:</strong> 8의 left subtree 안 9처럼 local 비교는 통과하지만 bounds는 위반하는 tree.</li>
+            <li><strong>Golden order:</strong> inorder가 reference sorted unique keys와 정확히 같다.</li>
+            <li><strong>Differential:</strong> random put/get/remove를 표준 ordered map 또는 sorted vector model과 비교한다.</li>
+            <li><strong>Property:</strong> comparator 반대칭·추이성, size=reachable, parent symmetry, 모든 key bounds.</li>
+            <li><strong>Shape:</strong> sorted, reverse, all-equal, random, organ-pipe 입력의 height/comparisons를 측정한다.</li>
+            <li><strong>Failure injection:</strong> node/key/value N번째 allocation 실패 전후 exact state를 비교한다.</li>
+            <li><strong>Sanitizer:</strong> delete 3 cases, repeated clear, iterator invalidation을 ASan/UBSan/LeakSanitizer로 확인한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">16. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Plain BST는 교육용 baseline:</strong> production ordered map은 높이 보장 구현을 사용한다.</li>
+            <li><strong>Comparator를 schema로 취급:</strong> 정렬 방향, null/NaN, case/locale, version을 persistence와 API에 고정한다.</li>
+            <li><strong>Key를 제자리 수정하지 않기:</strong> ordering이 달라지면 remove→modify→reinsert한다.</li>
+            <li><strong>Range가 없으면 hash도 비교:</strong> exact lookup만 필요할 때 ordered structure 비용을 정당화한다.</li>
+            <li><strong>Read-mostly면 sorted array:</strong> batch build 후 조회가 압도적이면 locality와 작은 memory footprint가 강하다.</li>
+            <li><strong>Height를 metric으로:</strong> size만 보지 말고 max/average depth, comparisons p95/p99, rotations를 관측한다.</li>
+            <li><strong>Bulk load 활용:</strong> sorted 입력을 median 순서로 build하거나 library bulk-load를 써서 O(n²) 삽입을 피한다.</li>
+            <li><strong>Node handle을 숨기기:</strong> rotation/delete 뒤 주소·identity 계약을 최소화하고 iterator invalidation을 문서화한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#047857">17. 45분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>7분:</strong> 예제 tree의 각 node에 허용 (lo,hi) 구간을 적는다.</li>
+            <li><strong>10분:</strong> iterative get/put과 replace duplicate policy를 구현한다.</li>
+            <li><strong>10분:</strong> 0/1/2-child delete와 parent link를 구현한다.</li>
+            <li><strong>8분:</strong> bounds+visited+size validator로 최소 반례를 거부한다.</li>
+            <li><strong>10분:</strong> random/sorted 입력의 height, comparisons, wall-clock을 측정한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#047857">18. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q1. BST validator에서 부모와 child만 비교하면 왜 틀리며 어떻게 고치나요?</strong><br>8-left-3-right-9 최소 반례를 그린다. 9&gt;3은 local 통과지만 root left이므로 9&lt;8 위반이다. (lo,hi)를 내려보내거나 strict inorder를 검사하고, cycle/shared/parent/size는 별도 RI로 검증한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q2. BST delete의 두-child case를 설명하고 정당화하세요.</strong><br>right subtree minimum successor는 left child가 없고 삭제 key와 나머지 right keys 사이에 있다. successor 원래 자리에는 right child를 transplant하고 삭제 위치를 successor가 맡는다. parent·root·metadata·identity 계약까지 말한다.</div>
+          <div style="padding:16px;background:#d1fae5;border-radius:10px"><strong>Q3. BST, hash map, sorted array, B-tree 중 무엇을 고르겠습니까?</strong><br>exact vs range/successor, update 비율, worst-case SLA, memory/cache/page를 먼저 묻는다. exact 중심은 hash, read-mostly는 sorted array, in-memory ordered update는 balanced tree, cache/page locality는 B-tree 계열로 방어한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">19. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>BST의 왼쪽 조건이 child가 아니라 subtree 전체에 적용되는 이유는?</li>
+            <li>search loop invariant를 한 문장으로 말하라.</li>
+            <li>balanced BST와 skewed BST의 h와 lookup 비용은?</li>
+            <li>두 child 삭제에서 successor에 left child가 없는 이유는?</li>
+            <li>equal key를 value replace하면 size는 어떻게 되는가?</li>
+            <li>inorder strict 증가만으로 확인하지 못하는 구조 RI 두 개는?</li>
+            <li>Day 22의 postorder가 augmentation 검증에 어떻게 쓰이는가?</li>
+            <li>Day 15~21 hash map보다 BST가 강한 연산 두 개는?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) search가 버리는 전체 영역의 안전성 때문. 2) target이 있으면 현재 subtree 안. 3) O(log n)/O(n). 4) 더 왼쪽이면 minimum 아님. 5) 불변. 6) cycle/shared node, parent/size 등. 7) child metadata 후 parent 식 검사. 8) predecessor/successor, ordered range.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">20. 다음 날 연결</h2>
+          <p>Day 24는 <strong>AVL/Red-Black balancing mental model</strong>이다. 오늘의 ordering RI는 그대로 두고 height/balance 또는 color RI를 추가한다. rotation이 inorder를 보존하는 이유, AVL의 더 엄격한 높이와 Red-Black의 update trade-off, 실패하기 쉬운 parent/root/metadata 갱신 순서를 다룬다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/d9c745bbfb610e9e53f6aef4261f3805_MIT6_006F11_lec05.pdf" style="color:#047857">MIT 6.006 — Lecture 5: Scheduling and Binary Search Trees</a>: BST invariant, find/min/successor/rank, 모든 연산 O(h), 정렬 삽입의 O(n) 높이.</li>
+            <li><a href="https://www.cs.cmu.edu/~122q/handouts/lectures/15-bst.pdf" style="color:#047857">CMU 15-122 — Lecture 15: Binary Search Trees</a>: strict ordering, search/insert contract, local validator 반례와 bounds validator, shape 의존 비용.</li>
+            <li><a href="https://xlinux.nist.gov/dads/HTML/binarySearchTree.html" style="color:#047857">NIST Dictionary of Algorithms and Data Structures — Binary Search Tree</a>: left/right subtree 전체에 적용되는 정의.</li>
+            <li><a href="https://docs.python.org/3/library/bisect.html" style="color:#047857">Python Standard Library — bisect</a>: O(log n) 위치 검색이 list의 O(n) 삽입에 지배되는 sorted array trade-off.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.BTreeMap.html" style="color:#047857">Rust Standard Library — BTreeMap</a>: total order와 key mutation logic error, BST node allocation/cache miss와 B-tree locality 절충.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·실행 검증: 2026-08-24 Asia/Seoul · 실측은 arm64 macOS 교육용 C11 benchmark이며 production library의 균형·allocator·동시성 구현을 대체하지 않는다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
