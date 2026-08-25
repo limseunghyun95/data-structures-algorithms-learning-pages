@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 24 · AVL/Red-Black balancing mental model</title>
+</head>
+<body style="margin:0;background:#111827;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#7f1d1d;color:#fff7ed">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 4 / DAY 24</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">Balance는 모양이 아니라<br>복구 가능한 계약이다</h1>
+          <p style="margin:0;color:#fecaca">Rotation proof → AVL height RI → Red-Black black-height → repair pipeline → production cost · 140분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #dc2626;background:#fee2e2;border-radius:10px">
+            <strong>한 줄 요약</strong><br>
+            AVL과 Red-Black Tree는 BST ordering을 rotation으로 보존하면서 서로 다른 balance invariant를 복구해 h=O(log n)을 강제하며, correctness는 <em>ordering 보존</em>과 <em>metadata·balance 복구</em>를 나눠 증명해야 한다.
+          </div>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Self-balancing BST</strong></td><td style="padding:8px;border:1px solid #fecaca">삽입·삭제 뒤 작은 구조 변경으로 높이를 logarithmic하게 제한하는 BST.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Rotation</strong></td><td style="padding:8px;border:1px solid #fecaca">몇 node의 parent/child 관계를 바꾸되 inorder key 순서를 그대로 두는 국소 변환.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>AVL Tree</strong></td><td style="padding:8px;border:1px solid #fecaca">모든 node에서 left/right subtree 높이 차의 절댓값을 1 이하로 유지하는 BST.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Balance factor</strong></td><td style="padding:8px;border:1px solid #fecaca"><code>height(left)-height(right)</code>. AVL에서 허용값은 −1, 0, +1.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>LL/RR/LR/RL</strong></td><td style="padding:8px;border:1px solid #fecaca">불균형 node에서 무거운 child와 grandchild 방향을 나타내는 네 경우.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Red-Black Tree</strong></td><td style="padding:8px;border:1px solid #fecaca">node 색과 black-height 규칙으로 가장 긴 path를 가장 짧은 path의 2배 이내로 묶는 BST.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>NIL leaf</strong></td><td style="padding:8px;border:1px solid #fecaca">실제 key가 없는 sentinel child. Red-Black 증명에서는 black으로 취급한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Black-height</strong></td><td style="padding:8px;border:1px solid #fecaca">한 node에서 descendant NIL까지 경로에 포함되는 black node 수. 모든 경로에서 같아야 한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Recolor</strong></td><td style="padding:8px;border:1px solid #fecaca">구조는 두고 red/black만 바꿔 color·black-height 위반을 이동하거나 해소하는 작업.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Fix-up / repair</strong></td><td style="padding:8px;border:1px solid #fecaca">일반 BST update 뒤 위반을 찾고 rotation·metadata·color를 갱신해 RI를 복구하는 단계.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Intrusive node</strong></td><td style="padding:8px;border:1px solid #fecaca">업무 object 안에 tree link 필드를 직접 넣어 별도 wrapper와 indirection을 줄이는 표현.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Augmentation</strong></td><td style="padding:8px;border:1px solid #fecaca">subtree size·max endpoint 같은 파생값을 node에 저장하는 것. rotation마다 다시 계산해야 한다.</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca"><strong>Iterator invalidation</strong></td><td style="padding:8px;border:1px solid #fecaca">구조 변경 뒤 기존 iterator/node handle을 계속 써도 되는지에 관한 API 계약.</td></tr>
+          </table>
+          <div style="margin-top:14px;padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>Mental model:</strong> rotation은 “정렬 순서 보존 장치”이고 AVL height나 RB color는 “높이 보증 장치”다. pointer만 맞았다고 balance가 맞는 것도, 색만 맞았다고 BST ordering이 맞는 것도 아니다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">2. Rotation architecture: 무엇이 바뀌고 무엇이 남는가</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:7px;text-align:center">
+            <tr><td colspan="3" style="padding:11px;background:#7f1d1d;color:white;border-radius:9px"><strong>Before: x의 right child y</strong></td></tr>
+            <tr><td style="padding:9px;background:#fee2e2"><strong>A</strong><br>keys&lt;x</td><td style="padding:9px;background:#fecaca"><strong>x</strong></td><td style="padding:9px;background:#fee2e2"><strong>y</strong><br>left=B, right=C</td></tr>
+            <tr><td colspan="3" style="color:#b91c1c;font-weight:800">Left-Rotate(x) ↓</td></tr>
+            <tr><td style="padding:9px;background:#fee2e2"><strong>x</strong><br>left=A, right=B</td><td style="padding:9px;background:#fecaca"><strong>y</strong></td><td style="padding:9px;background:#fee2e2"><strong>C</strong><br>keys&gt;y</td></tr>
+          </table>
+          <p><strong>순서 증명:</strong> BST RI에서 <code>A &lt; x &lt; B &lt; y &lt; C</code>. 회전 전 inorder도 <code>A,x,B,y,C</code>, 회전 후도 같다. 따라서 ordering은 보존된다. 그러나 root/parent link, x·y의 height, subtree augmentation은 별도로 갱신해야 한다.</p>
+          <p><strong>최소 반례:</strong> x를 y.left로 바꾸기 전에 B를 x.right에 보존하지 않으면 B subtree를 잃는다. parent의 child가 여전히 x를 가리키면 두 root가 생기거나 새 y가 tree에서 orphan이 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">3. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> deadline 순서로 task를 저장하며 put/remove/lowerBound/range를 제공한다. key는 정렬 또는 공격자가 고른 순서로 들어올 수 있고 p99 latency SLA가 있다. read가 많지만 cancel/delete도 꾸준히 발생한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fee2e2"><th align="left" style="padding:8px;border:1px solid #fecaca">제약 질문</th><th align="left" style="padding:8px;border:1px solid #fecaca">관찰 지표</th><th align="left" style="padding:8px;border:1px solid #fecaca">선택 영향</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">lookup이 update보다 훨씬 많은가?</td><td style="padding:8px;border:1px solid #fecaca">read:update, comparisons p99</td><td style="padding:8px;border:1px solid #fecaca">더 엄격한 AVL 후보</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">insert/delete tail이 중요한가?</td><td style="padding:8px;border:1px solid #fecaca">rotations·recolors·fix-up steps</td><td style="padding:8px;border:1px solid #fecaca">Red-Black 후보</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">range/min timer가 핵심인가?</td><td style="padding:8px;border:1px solid #fecaca">successor, leftmost 빈도</td><td style="padding:8px;border:1px solid #fecaca">cached root/leftmost 고려</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">node가 cache에 잘 맞는가?</td><td style="padding:8px;border:1px solid #fecaca">bytes/node, cache miss</td><td style="padding:8px;border:1px solid #fecaca">intrusive/arena/B-tree 비교</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">동시 update가 있는가?</td><td style="padding:8px;border:1px solid #fecaca">lock hold, retry, iterator lifetime</td><td style="padding:8px;border:1px solid #fecaca">library concurrency model 우선</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">subtree metadata가 있는가?</td><td style="padding:8px;border:1px solid #fecaca">augmentation validation</td><td style="padding:8px;border:1px solid #fecaca">rotation callback/갱신 순서</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">4. Architecture / repair pipeline</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 8px">
+            <tr><td style="width:31%;padding:13px;background:#b91c1c;color:white;border-radius:9px"><strong>① Search path</strong></td><td style="padding:13px;background:#fff1f2">Day 23 global ordering으로 위치 탐색, duplicate 결정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#b91c1c;font-weight:800">↓ allocation/copy를 먼저 성공</td></tr>
+            <tr><td style="padding:13px;background:#b91c1c;color:white;border-radius:9px"><strong>② Local commit</strong></td><td style="padding:13px;background:#fff1f2">leaf link 또는 BST delete/transplant, ordering 유지</td></tr>
+            <tr><td align="center" colspan="2" style="color:#b91c1c;font-weight:800">↓ ancestor path에서 임시 balance 위반</td></tr>
+            <tr><td style="padding:13px;background:#b91c1c;color:white;border-radius:9px"><strong>③ Detect</strong></td><td style="padding:13px;background:#fff1f2">AVL height/balance 또는 RB red-red/black deficit</td></tr>
+            <tr><td align="center" colspan="2" style="color:#b91c1c;font-weight:800">↓ case 분류 후 rotation/recolor</td></tr>
+            <tr><td style="padding:13px;background:#b91c1c;color:white;border-radius:9px"><strong>④ Restore bottom-up</strong></td><td style="padding:13px;background:#fff1f2">child 먼저, 이전 root 다음, 새 root 마지막으로 metadata pull</td></tr>
+            <tr><td align="center" colspan="2" style="color:#b91c1c;font-weight:800">↓ root/header/leftmost와 전체 RI 확인</td></tr>
+            <tr><td style="padding:13px;background:#7f1d1d;color:white;border-radius:9px"><strong>⑤ Publish / observe</strong></td><td style="padding:13px;background:#fff1f2">lock release 전 완전 복구, height·rotation·latency metric</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">5. Ordered Map ADT와 계층화된 representation invariant</h2>
+          <p>AVL과 RB는 같은 Ordered Map ADT를 구현한다. client는 <code>get/put/remove/lowerBound/range</code> 결과로 둘을 구분할 수 없어야 한다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>공통 RI-1 구조:</strong> single root, one parent, acyclic, reachable count=size.</li>
+            <li><strong>공통 RI-2 순서:</strong> left의 모든 key&lt;node&lt;right의 모든 key, comparator 안정.</li>
+            <li><strong>공통 RI-3 연결:</strong> child↔parent 대칭, header root와 root.parent 일치.</li>
+            <li><strong>AVL RI-4:</strong> stored height=<code>1+max(hL,hR)</code>, empty height −1.</li>
+            <li><strong>AVL RI-5:</strong> 모든 node에서 <code>|hL−hR|≤1</code>.</li>
+            <li><strong>RB RI-4:</strong> root와 모든 NIL leaf는 black.</li>
+            <li><strong>RB RI-5:</strong> red node의 child는 모두 black, 즉 red-red edge 없음.</li>
+            <li><strong>RB RI-6:</strong> 한 node에서 descendant NIL까지 모든 path의 black-height 동일.</li>
+            <li><strong>공통 RI-7 augmentation:</strong> subtree size/max 등은 child 값의 정의식과 일치.</li>
+          </ol>
+          <p><strong>디버깅 순서:</strong> 구조→ordering→metadata→balance를 따로 검사하면 “틀린 pointer 때문에 height도 틀린 것”과 “pointer는 맞고 height만 stale”을 구분할 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">6. AVL: 높이 차 ±1이 logarithmic height를 만드는 이유</h2>
+          <p>높이 h인 AVL의 최소 node 수를 N(h)라 하자. 가장 적은 node로 높이 h를 만들려면 child 높이가 h−1과 h−2여야 하므로 <code>N(h)=1+N(h−1)+N(h−2)</code>. Fibonacci처럼 지수적으로 증가하므로 역으로 <code>h=O(log n)</code>, 더 정확히 최대 높이는 약 <code>1.44 log₂n</code> 수준이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fee2e2"><th style="padding:8px;border:1px solid #fecaca">case</th><th style="padding:8px;border:1px solid #fecaca">판정</th><th style="padding:8px;border:1px solid #fecaca">복구</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">LL</td><td style="padding:8px;border:1px solid #fecaca">z left-heavy, left child left-heavy/0</td><td style="padding:8px;border:1px solid #fecaca">Right-Rotate(z)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">RR</td><td style="padding:8px;border:1px solid #fecaca">z right-heavy, right child right-heavy/0</td><td style="padding:8px;border:1px solid #fecaca">Left-Rotate(z)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">LR</td><td style="padding:8px;border:1px solid #fecaca">z left-heavy, left child right-heavy</td><td style="padding:8px;border:1px solid #fecaca">Left(child), Right(z)</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">RL</td><td style="padding:8px;border:1px solid #fecaca">z right-heavy, right child left-heavy</td><td style="padding:8px;border:1px solid #fecaca">Right(child), Left(z)</td></tr>
+          </table>
+          <p>표준 AVL insert는 첫 unbalanced ancestor에서 single 또는 double rotation 후 그 subtree 높이가 삽입 전 수준으로 돌아가므로 구조 회전은 거기서 끝낼 수 있다. delete는 subtree 높이 감소가 위로 전파되어 여러 ancestor를 연속 복구할 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">7. Red-Black: 느슨한 balance를 색으로 인코딩한다</h2>
+          <p>black-height가 b이면 subtree에는 적어도 <code>2^b−1</code> internal node가 있다. red-red가 금지되어 어떤 root→NIL path도 black node 사이에 red를 하나보다 많이 끼울 수 없으므로 전체 높이는 black path의 2배 이하. 따라서 <code>h≤2log₂(n+1)</code>이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fee2e2"><th style="padding:8px;border:1px solid #fecaca">insert 상황</th><th style="padding:8px;border:1px solid #fecaca">의미</th><th style="padding:8px;border:1px solid #fecaca">mental action</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">새 leaf를 red로</td><td style="padding:8px;border:1px solid #fecaca">black-height는 즉시 보존</td><td style="padding:8px;border:1px solid #fecaca">red-red만 검사</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">parent black</td><td style="padding:8px;border:1px solid #fecaca">위반 없음</td><td style="padding:8px;border:1px solid #fecaca">종료</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">parent·uncle red</td><td style="padding:8px;border:1px solid #fecaca">local black-height 맞음</td><td style="padding:8px;border:1px solid #fecaca">parent/uncle black, grandparent red; 위반을 위로</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">parent red, uncle black</td><td style="padding:8px;border:1px solid #fecaca">triangle/line case</td><td style="padding:8px;border:1px solid #fecaca">rotation으로 line화 후 rotate+recolor</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">root red</td><td style="padding:8px;border:1px solid #fecaca">root convention 위반</td><td style="padding:8px;border:1px solid #fecaca">root black으로</td></tr>
+          </table>
+          <p>RB delete의 “double black”은 실제 세 번째 색이라기보다 한 path의 black count가 하나 부족하다는 회계 표기다. sibling 색과 nephew 색에 따라 recolor·rotation하며 deficit을 없애거나 parent로 올린다. case가 많아 손 구현 오류가 특히 잦다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">8. Rotation 정당성과 metadata 갱신 순서</h2>
+          <p><strong>구조 proof obligation:</strong> subtree의 외부 key interval, inorder sequence, 모든 내부 node의 유일 parent, 외부 parent가 가리키는 subtree root를 보존한다.</p>
+          <p><strong>metadata proof obligation:</strong> left rotation 뒤 먼저 아래로 내려간 x를 <code>pull(x)</code>하고, 그 결과를 읽어 새 root y를 <code>pull(y)</code>한다. 반대로 하면 y가 x의 stale height/size를 읽는다.</p>
+          <pre style="padding:16px;background:#111827;color:#e5e7eb;border-radius:10px;overflow:auto;font-size:12px;line-height:1.55"><code>Node *rotate_left(Tree *t, Node *x) {
+  Node *y = require(x-&gt;right);
+  Node *b = y-&gt;left;
+
+  replace_child_or_root(t, x-&gt;parent, x, y);
+  y-&gt;left = x;  x-&gt;parent = y;
+  x-&gt;right = b; if (b) b-&gt;parent = x;
+
+  pull(x);  // 아래 node 먼저: height/size/max...
+  pull(y);  // 새 subtree root 다음
+  return y;
+}</code></pre>
+          <p>augmentation이 여러 개면 각각 같은 dependency 순서를 지켜야 한다. Linux의 augmented rbtree API도 propagation/copy/rotation callback을 분리해 회전 시 이전 root 값을 복사·재계산하도록 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">9. AVL vs Red-Black: 둘 다 O(log n), 상수와 계약이 다르다</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#fee2e2"><th style="padding:7px;border:1px solid #fecaca">축</th><th style="padding:7px;border:1px solid #fecaca">AVL</th><th style="padding:7px;border:1px solid #fecaca">Red-Black</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">balance RI</td><td style="padding:7px;border:1px solid #fecaca">모든 node 높이 차 ≤1</td><td style="padding:7px;border:1px solid #fecaca">red-red 금지 + equal black-height</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">height bound</td><td style="padding:7px;border:1px solid #fecaca">약 1.44 log₂n</td><td style="padding:7px;border:1px solid #fecaca">≤2 log₂(n+1)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">lookup 성향</td><td style="padding:7px;border:1px solid #fecaca">더 얕아 비교 수에 유리</td><td style="padding:7px;border:1px solid #fecaca">조금 더 깊을 수 있음</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">update 성향</td><td style="padding:7px;border:1px solid #fecaca">height pull, delete cascade 가능</td><td style="padding:7px;border:1px solid #fecaca">더 느슨, recolor와 제한된 rotations</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">metadata</td><td style="padding:7px;border:1px solid #fecaca">height 또는 balance factor</td><td style="padding:7px;border:1px solid #fecaca">color bit, 종종 parent pointer와 packing</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">좋은 후보</td><td style="padding:7px;border:1px solid #fecaca">lookup-heavy in-memory index</td><td style="padding:7px;border:1px solid #fecaca">mixed update ordered map, systems library</td></tr>
+          </table>
+          <p>Linux 문서는 RB가 AVL보다 lookup은 약간 느릴 수 있지만 insert/delete의 rotation 수를 실시간 worst-case로 제한하기 좋다고 설명한다. 그러나 실제 선택은 구현 품질, key 비교 비용, cache, concurrency가 이론적 차이보다 클 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">10. Complexity와 amortized 구분</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fee2e2"><th style="padding:8px;border:1px solid #fecaca">연산</th><th style="padding:8px;border:1px solid #fecaca">AVL/RB 시간</th><th style="padding:8px;border:1px solid #fecaca">공간</th><th style="padding:8px;border:1px solid #fecaca">주의</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">get/lowerBound</td><td style="padding:8px;border:1px solid #fecaca">O(log n) worst</td><td style="padding:8px;border:1px solid #fecaca">iterative O(1)</td><td style="padding:8px;border:1px solid #fecaca">비교 함수 비용 별도</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">put/remove</td><td style="padding:8px;border:1px solid #fecaca">O(log n) worst</td><td style="padding:8px;border:1px solid #fecaca">path/recursion O(log n)</td><td style="padding:8px;border:1px solid #fecaca">search+repair 모두 포함</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">range k개</td><td style="padding:8px;border:1px solid #fecaca">O(log n+k)</td><td style="padding:8px;border:1px solid #fecaca">iterator O(log n)</td><td style="padding:8px;border:1px solid #fecaca">output cost는 피할 수 없음</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">full validate</td><td style="padding:8px;border:1px solid #fecaca">Θ(n)</td><td style="padding:8px;border:1px solid #fecaca">O(n) visited + O(log n) stack</td><td style="padding:8px;border:1px solid #fecaca">debug/offline path</td></tr>
+          </table>
+          <p>이 보장은 “평균적으로 빠르다” 또는 “여러 연산에 나눠 갚는 amortized”가 아니라 각 연산의 worst-case height가 logarithmic하다는 뜻이다. 다만 전체 inorder iteration의 successor step처럼 어떤 세부 연산은 amortized O(1)로 설명할 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">11. 실측: 정렬 100만 key를 height 19로 막는 비용</h2>
+          <p>Apple clang 21.0.0, C11 <code>-O3 -Wall -Wextra -Werror</code>, 100만 unique key와 100만 random hit query. 5회 실행의 중앙값이며 arena-index AVL이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+            <tr style="background:#fee2e2"><th style="padding:8px;border:1px solid #fecaca">측정</th><th style="padding:8px;border:1px solid #fecaca">정렬 입력 AVL</th><th style="padding:8px;border:1px solid #fecaca">무작위 입력 AVL</th></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">최종 height</td><td style="padding:8px;border:1px solid #fecaca">19</td><td style="padding:8px;border:1px solid #fecaca">23</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">rotations</td><td style="padding:8px;border:1px solid #fecaca">999,980</td><td style="padding:8px;border:1px solid #fecaca">698,841</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">build</td><td style="padding:8px;border:1px solid #fecaca">155.251ms</td><td style="padding:8px;border:1px solid #fecaca">380.109ms</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">평균 lookup comparisons</td><td style="padding:8px;border:1px solid #fecaca">18.951</td><td style="padding:8px;border:1px solid #fecaca">19.290</td></tr>
+            <tr><td style="padding:8px;border:1px solid #fecaca">100만 lookup</td><td style="padding:8px;border:1px solid #fecaca">219.182ms</td><td style="padding:8px;border:1px solid #fecaca">143.825ms</td></tr>
+          </table>
+          <p>plain BST에 정렬 입력을 넣으면 height 999,999, 누적 insert comparison은 499,999,500,000이다. AVL은 거의 key마다 rotate해도 전체 build를 O(n log n) 안에 묶었다.</p>
+          <p><strong>중요한 역전:</strong> 정렬 입력 AVL이 더 낮고 비교도 적지만 lookup wall-clock은 더 느렸다. rotation 뒤 logical shape와 arena allocation order가 어긋나 생긴 locality 차이다. comparison count와 cache miss를 함께 측정해야 한다.</p>
+          <p><strong>검증:</strong> LL/RR/LR/RL 네 case, 20만 random put differential test, full-capacity exact-state failure atomicity, global ordering·stored height·balance factor를 검사했고 ASan/UBSan을 통과했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">12. Memory/locality와 systems representation</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#fee2e2"><th style="padding:7px;border:1px solid #fecaca">선택</th><th style="padding:7px;border:1px solid #fecaca">이점</th><th style="padding:7px;border:1px solid #fecaca">비용/함정</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">wrapper node + payload*</td><td style="padding:7px;border:1px solid #fecaca">generic API 단순</td><td style="padding:7px;border:1px solid #fecaca">추가 allocation/indirection</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">intrusive rb_node</td><td style="padding:7px;border:1px solid #fecaca">allocation·indirection 감소</td><td style="padding:7px;border:1px solid #fecaca">object lifetime와 한 object의 다중 index 설계</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">arena + index</td><td style="padding:7px;border:1px solid #fecaca">compact, bounds check, batch lifetime</td><td style="padding:7px;border:1px solid #fecaca">rotation 후 physical locality는 자동 개선 안 됨</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">parent+color packing</td><td style="padding:7px;border:1px solid #fecaca">node bytes 감소 가능</td><td style="padding:7px;border:1px solid #fecaca">alignment/bit masking/UB 검증 필요</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">cached leftmost</td><td style="padding:7px;border:1px solid #fecaca">min O(1)</td><td style="padding:7px;border:1px solid #fecaca">insert/delete마다 cache RI 유지</td></tr>
+          </table>
+          <p>Linux rbtree는 <code>rb_node</code>를 업무 구조체에 embed해 indirection과 locality 비용을 줄이고, 비교 callback도 caller search code에 둔다. 대신 locking은 사용자 책임이다. 빠른 저수준 API는 더 많은 불변식 책임을 호출자에게 넘긴다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">13. Error handling과 adversarial failure</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#fee2e2"><th align="left" style="padding:7px;border:1px solid #fecaca">실패</th><th align="left" style="padding:7px;border:1px solid #fecaca">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #fecaca">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">OOM/key copy 실패</td><td style="padding:7px;border:1px solid #fecaca">allocate/copy 후 link, repair는 non-failing</td><td style="padding:7px;border:1px solid #fecaca">tree를 반쯤 rotate한 뒤 allocation</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">rotation root 누락</td><td style="padding:7px;border:1px solid #fecaca">parent-or-header helper 하나로 교체</td><td style="padding:7px;border:1px solid #fecaca">root case를 일반 child처럼 처리</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">stale height/augmentation</td><td style="padding:7px;border:1px solid #fecaca">old root→new root pull, RI assert</td><td style="padding:7px;border:1px solid #fecaca">rotation 전 계산값 재사용</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">RB NIL 혼용</td><td style="padding:7px;border:1px solid #fecaca">sentinel/null convention 하나로 통일</td><td style="padding:7px;border:1px solid #fecaca">null color dereference</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">key-changing replacement</td><td style="padding:7px;border:1px solid #fecaca">같은 key만 replace, 아니면 remove+insert</td><td style="padding:7px;border:1px solid #fecaca">Linux rb_replace_node에 다른 key 전달</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">concurrent reader</td><td style="padding:7px;border:1px solid #fecaca">lock/snapshot/RCU-aware 전용 구현</td><td style="padding:7px;border:1px solid #fecaca">여러 pointer write를 atomic으로 가정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">iterator 중 mutation</td><td style="padding:7px;border:1px solid #fecaca">version/fail-fast/명시적 invalidation</td><td style="padding:7px;border:1px solid #fecaca">삭제 node의 successor 접근</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fecaca">counter overflow</td><td style="padding:7px;border:1px solid #fecaca">checked size/augmentation arithmetic</td><td style="padding:7px;border:1px solid #fecaca">wrap된 rank/max를 정상 반환</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">14. 테스트 전략</h2>
+          <ul style="padding-left:22px">
+            <li><strong>회전 golden:</strong> 30-20-10, 10-20-30, 30-10-20, 10-30-20이 모두 root 20의 같은 inorder tree가 된다.</li>
+            <li><strong>구조 RI:</strong> cycle/shared/orphan, parent symmetry, root parent, reachable count.</li>
+            <li><strong>AVL RI:</strong> 각 node의 recomputed height와 stored height 일치, factor 범위.</li>
+            <li><strong>RB RI:</strong> root/NIL black, red-red 없음, 모든 NIL path black-height 동일.</li>
+            <li><strong>Differential:</strong> random put/get/remove/range를 표준 ordered map과 비교한다.</li>
+            <li><strong>Adversarial:</strong> sorted/reverse/alternating min-max/all-equal과 delete cascade.</li>
+            <li><strong>Failure injection:</strong> allocation·key copy 실패 전후 root/size/inorder/metadata가 동일한지 확인한다.</li>
+            <li><strong>Rotation instrumentation:</strong> 네 case, recolor, fix-up step, max height를 workload별 집계한다.</li>
+            <li><strong>Sanitizer/concurrency:</strong> ASan/UBSan/TSan과 iterator·lock protocol을 별도 검증한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">15. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li><strong>검증된 library 우선:</strong> RB delete를 면접용으로 이해하되 production에서 새로 쓰지 않는다.</li>
+            <li><strong>RI를 계층별 assert:</strong> debug build에서 ordering, parent, height/color, augmentation을 분리한다.</li>
+            <li><strong>Repair path는 allocation-free:</strong> local commit 뒤 rotation/recolor가 실패하지 않게 한다.</li>
+            <li><strong>Workload로 AVL/RB 선택:</strong> read/update 비율과 p99, 회전·cache miss를 실제 key로 측정한다.</li>
+            <li><strong>Comparator/key immutability:</strong> Day 23 계약을 balance 구현에도 동일하게 적용한다.</li>
+            <li><strong>Augmentation callback 단일화:</strong> 모든 rotation/delete가 같은 pull logic을 거치게 한다.</li>
+            <li><strong>Concurrency는 별도 설계:</strong> balanced tree라는 사실은 thread safety를 제공하지 않는다.</li>
+            <li><strong>관측:</strong> size뿐 아니라 height, rotations/update, recolors, comparisons, cache miss, lock hold p99를 낸다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">16. 50분 실습</h2>
+          <ol style="padding-left:22px">
+            <li><strong>8분:</strong> left rotation 전후 inorder와 parent/child 변화를 손으로 쓴다.</li>
+            <li><strong>12분:</strong> height pull, left/right rotation과 LL/RR/LR/RL insert를 구현한다.</li>
+            <li><strong>10분:</strong> global order+height+factor validator와 네 golden case를 만든다.</li>
+            <li><strong>10분:</strong> sorted/random 10만 key의 height·rotation·comparison을 측정한다.</li>
+            <li><strong>10분:</strong> RB insert case를 uncle red/black으로 분류하고 black-height를 손검증한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">17. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#fee2e2;border-radius:10px"><strong>Q1. Rotation이 BST ordering을 보존한다는 것을 증명하세요.</strong><br>left rotation에서 subtrees A,B,C에 대해 A&lt;x&lt;B&lt;y&lt;C를 놓는다. 전후 inorder가 A,x,B,y,C로 동일함을 보이고, B parent·외부 parent/root·metadata 갱신까지 구현 책임을 말한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#fee2e2;border-radius:10px"><strong>Q2. AVL과 Red-Black을 비교하고 언제 고르겠습니까?</strong><br>AVL factor≤1과 약 1.44log n, RB red-red/equal black-height와 ≤2log(n+1)를 설명한다. lookup-heavy는 AVL 가능, mixed update와 검증된 표준 구현은 RB가 흔하지만 실제 p99·cache·library를 측정한다고 답한다.</div>
+          <div style="padding:16px;background:#fee2e2;border-radius:10px"><strong>Q3. Red-Black invariant가 왜 logarithmic height를 보장하나요?</strong><br>black-height b subtree에 최소 2^b−1 node가 있고, red-red 금지로 어떤 path도 black node 수의 2배보다 길 수 없다. 따라서 h≤2b≤2log₂(n+1). root/NIL black convention을 먼저 선언한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">18. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>left rotation에서 B subtree가 이동하는 위치와 이유는?</li>
+            <li>LR case가 single rotation 하나로 해결되지 않는 이유는?</li>
+            <li>AVL 최소 node recurrence는 무엇인가?</li>
+            <li>RB 새 leaf를 red로 넣으면 어떤 invariant가 즉시 보존되는가?</li>
+            <li>RB path가 black-height의 2배보다 길 수 없는 이유는?</li>
+            <li>rotation 후 height를 old root부터 갱신하는 이유는?</li>
+            <li>Day 23 ordering validator만 통과해도 balanced tree인가?</li>
+            <li>비교 횟수가 적은 tree가 wall-clock에서 느릴 수 있는 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#dcfce7;border:1px solid #86efac;border-radius:10px"><strong>답 확인:</strong> 1) x.right, x&lt;B&lt;y. 2) child가 반대 방향이라 먼저 line화. 3) 1+N(h−1)+N(h−2). 4) black-height. 5) 연속 red 금지. 6) 새 root가 old root metadata를 읽기 때문. 7) 아니다, balance RI 별도. 8) allocation/layout/cache miss.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">19. 다음 날 연결</h2>
+          <p>Day 25는 <strong>heap과 priority queue</strong>다. ordered map처럼 전체 순서를 유지하지 않고 “최솟값/최댓값 하나”만 빠르게 꺼내는 더 약한 ADT를 배운다. complete-tree array representation, heap-order invariant, sift-up/down proof, scheduler에서 AVL/RB 대신 heap을 고르는 이유를 연결한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b91c1c">출처 · 공식 문서와 대학 공개 강의</h2>
+          <ul style="padding-left:22px;font-size:14px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/83cdd705cd418d10d9769b741e34a2b8_MIT6_006F11_lec06.pdf" style="color:#b91c1c">MIT 6.006 — Lecture 6: Balanced Binary Search Trees</a>: AVL 정의, 최소 node recurrence와 약 1.44lg n 높이, rotation·insert.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/resources/mit6_006s20_lec7/" style="color:#b91c1c">MIT 6.006 — Lecture 7: Binary Trees, Part 2: AVL</a>: 현대 강의의 AVL augmentation·rotation·sequence operation 관점.</li>
+            <li><a href="https://www.cs.cmu.edu/~me/courses/15-150-Spring2020/lectures/18/rbtree.pdf" style="color:#b91c1c">CMU 15-150 — Red/Black Trees</a>: order, equal black-height, red-parent color invariant와 local restoration.</li>
+            <li><a href="https://www.kernel.org/doc/html/latest/core-api/rbtree.html" style="color:#b91c1c">Linux Kernel Documentation — Red-black Trees</a>: AVL/RB trade-off, intrusive node locality, locking 책임, cached/augmented APIs.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/util/TreeMap.html" style="color:#b91c1c">Java SE — TreeMap</a>: Red-Black NavigableMap, get/put/remove의 guaranteed log(n), comparator/equals와 외부 동기화 계약.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:13px">작성·실행 검증: 2026-08-25 Asia/Seoul · 실측은 arm64 macOS의 교육용 arena-index AVL이며 production RB library와 직접 성능 비교가 아니다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

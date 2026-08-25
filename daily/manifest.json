@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-24T09:07:28+09:00",
+  "updatedAt": "2026-08-25T09:00:42+09:00",
   "lessons": [
     {
       "day": 1,
@@ -212,6 +212,15 @@
       "path": "day-23.html",
       "kind": "lesson",
       "publishedAt": "2026-08-24T09:07:28+09:00"
+    },
+    {
+      "day": 24,
+      "week": 4,
+      "title": "AVL/Red-Black balancing mental model",
+      "summary": "rotation의 inorder 보존부터 AVL height·Red-Black color/black-height RI, repair pipeline, update·locality trade-off까지 연결합니다.",
+      "path": "day-24.html",
+      "kind": "lesson",
+      "publishedAt": "2026-08-25T09:00:42+09:00"
     }
   ]
 }
