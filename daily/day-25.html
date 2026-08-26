@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 25 · heap과 priority queue</title>
+</head>
+<body style="margin:0;background:#111827;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#075985;color:#f0f9ff">
+          <div style="color:#bae6fd;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 4 / DAY 25</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">전부 정렬하지 말고<br>다음 하나만 지배하라</h1>
+          <p style="margin:0;color:#e0f2fe">Priority Queue ADT → heap RI → sift proof → Θ(n) heapify → scheduler production design · 150분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #0284c7;background:#e0f2fe;border-radius:10px"><strong>한 줄 요약</strong><br>Priority Queue는 “가장 우선인 항목”을 반복 제공하는 ADT이고, binary heap은 complete array와 parent≤child라는 국소 불변식으로 peek Θ(1), push·poll Θ(log n), bottom-up build Θ(n)을 구현한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Priority Queue(PQ)</strong></td><td style="padding:7px;border:1px solid #bae6fd">먼저 들어온 값이 아니라 우선순위가 가장 높은 값을 먼저 꺼내는 추상 자료형(ADT).</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>ADT</strong></td><td style="padding:7px;border:1px solid #bae6fd">사용자에게 보이는 연산·결과의 계약. PQ는 계약, heap은 그 구현 표현 중 하나다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Min/Max heap</strong></td><td style="padding:7px;border:1px solid #bae6fd">최솟값/최댓값이 root에 오도록 heap-order를 유지하는 구조.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Complete binary tree</strong></td><td style="padding:7px;border:1px solid #bae6fd">마지막 level만 덜 찰 수 있고 그마저 왼쪽부터 채운 이진트리. 포인터 없이 연속 배열에 담을 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Heap-order</strong></td><td style="padding:7px;border:1px solid #bae6fd">min-heap의 모든 edge에서 parent≤child라는 국소 규칙. 배열 전체 정렬과 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Head/root</strong></td><td style="padding:7px;border:1px solid #bae6fd">현재 최소/최대 항목. 배열 index 0에 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Sift-up/down</strong></td><td style="padding:7px;border:1px solid #bae6fd">삽입 항목을 parent 쪽으로, root 교체 항목을 child 쪽으로 swap하며 RI를 복구하는 절차.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Heapify</strong></td><td style="padding:7px;border:1px solid #bae6fd">임의 배열을 heap으로 만드는 과정. 아래 internal node부터 sift-down하면 Θ(n).</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Stable tie-break</strong></td><td style="padding:7px;border:1px solid #bae6fd">같은 priority일 때 insertion sequence 같은 2차 key로 FIFO 순서를 보장하는 정책.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Decrease-key</strong></td><td style="padding:7px;border:1px solid #bae6fd">기존 항목의 key를 더 우선되게 바꾸는 연산. 위치 handle/map이 있으면 sift-up Θ(log n).</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>Lazy deletion</strong></td><td style="padding:7px;border:1px solid #bae6fd">기존 entry를 즉시 찾지 않고 새 version을 넣은 뒤 pop할 때 stale entry를 버리는 방법.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd"><strong>d-ary heap</strong></td><td style="padding:7px;border:1px solid #bae6fd">한 node가 d개 child를 갖는 heap. 높이는 낮아지지만 sift-down 비교 수는 늘어난다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">2. 문제·입출력·제약 mental model</h2>
+          <p><strong>상황:</strong> task scheduler가 <code>(deadline, sequence, taskId)</code>를 받고 가장 이른 task를 계속 꺼낸다. 취소·deadline 변경·동일 deadline·burst·메모리 한계·동시 producer가 존재한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#e0f2fe"><th align="left" style="padding:7px;border:1px solid #bae6fd">먼저 물을 질문</th><th align="left" style="padding:7px;border:1px solid #bae6fd">설계 영향</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">최솟값만 필요한가, 전체 순회/range도 필요한가?</td><td style="padding:7px;border:1px solid #bae6fd">최솟값 중심이면 heap, ordered iteration까지면 balanced tree를 비교한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">priority tie 순서가 계약인가?</td><td style="padding:7px;border:1px solid #bae6fd"><code>(priority, sequence)</code> lexicographic comparator가 필요하다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">임의 task 취소·갱신이 잦은가?</td><td style="padding:7px;border:1px solid #bae6fd">id→index map 또는 lazy deletion과 stale 비율 정책이 필요하다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">용량 초과 때 block/drop/reject 중 무엇인가?</td><td style="padding:7px;border:1px solid #bae6fd">bounded queue와 backpressure 계약을 먼저 정한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">priority가 monotonic clock인가 wall clock인가?</td><td style="padding:7px;border:1px solid #bae6fd">clock jump·overflow·단위 혼용 방어가 달라진다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">3. Architecture 그림: 배열과 scheduler 흐름</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:6px;text-align:center;font-size:13px">
+            <tr><td colspan="4" style="padding:11px;background:#075985;color:white;border-radius:9px"><strong>Min-heap tree: root가 전역 최소</strong></td></tr>
+            <tr><td></td><td colspan="2" style="padding:10px;background:#bae6fd"><strong>[0] 2</strong></td><td></td></tr>
+            <tr><td style="padding:10px;background:#e0f2fe"><strong>[1] 5</strong></td><td></td><td></td><td style="padding:10px;background:#e0f2fe"><strong>[2] 4</strong></td></tr>
+            <tr><td style="padding:8px;background:#f0f9ff">[3] 9</td><td style="padding:8px;background:#f0f9ff">[4] 7</td><td style="padding:8px;background:#f0f9ff">[5] 8</td><td style="padding:8px;background:#f0f9ff">[6] 6</td></tr>
+          </table>
+          <p><code>left(i)=2i+1</code>, <code>right(i)=2i+2</code>, <code>parent(i)=⌊(i−1)/2⌋</code>. 값 4가 index 2에 있어도 5보다 작다. sibling·cousin 사이에는 순서 계약이 없기 때문이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:26%;padding:12px;background:#0284c7;color:white;border-radius:8px"><strong>Producer</strong></td><td style="padding:12px;background:#f0f9ff">validate → capacity/OOM 확인 → sequence 발급</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0369a1;font-weight:800">↓ offer: tail commit + sift-up</td></tr>
+            <tr><td style="padding:12px;background:#0284c7;color:white;border-radius:8px"><strong>Heap + id map</strong></td><td style="padding:12px;background:#f0f9ff">array RI와 id↔index RI를 같은 lock/transaction에서 복구</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0369a1;font-weight:800">↓ poll: root 반환 + last 이동 + sift-down</td></tr>
+            <tr><td style="padding:12px;background:#075985;color:white;border-radius:8px"><strong>Worker</strong></td><td style="padding:12px;background:#f0f9ff">stale/cancel/deadline 재검사 → 실행 → metric/ack</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">4. PQ ADT와 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>offer(x)</code>, <code>peek()</code>, <code>poll()</code>, <code>size()</code>. 선택적으로 <code>remove(id)</code>, <code>changePriority(id,p)</code>. empty·full·duplicate id·tie의 결과도 계약이다.</p>
+          <ol style="padding-left:22px">
+            <li><strong>RI-1 bounds:</strong> <code>0≤size≤capacity</code>, live 원소는 정확히 <code>a[0..size)</code>.</li>
+            <li><strong>RI-2 shape:</strong> prefix가 complete tree이므로 hole이 없다.</li>
+            <li><strong>RI-3 order:</strong> 모든 <code>i&gt;0</code>에서 <code>!before(a[i],a[parent(i)])</code>.</li>
+            <li><strong>RI-4 comparator:</strong> priority와 sequence의 lexicographic order가 실행 중 바뀌지 않는다.</li>
+            <li><strong>RI-5 identity:</strong> handle map을 쓰면 모든 live id에 대해 <code>map[a[i].id]=i</code>, map의 모든 항목도 배열을 역참조한다.</li>
+            <li><strong>RI-6 ownership:</strong> 항목 payload lifetime과 mutation 권한이 API 계약과 일치한다.</li>
+          </ol>
+          <p><strong>왜 root가 최소인가?</strong> RI-3을 root→어떤 node 경로에 반복 적용하면 <code>root≤…≤node</code>. 경로 길이에 대한 귀납법으로 root≤모든 원소이므로 root가 전역 최소다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">5. offer와 sift-up 정당성</h2>
+          <p>새 원소를 tail에 두면 shape는 보존되고, 새 node→root 경로를 제외한 edge의 order도 그대로다. 반복문의 불변식은 “위반 가능 edge는 현재 i와 parent 사이 하나뿐”이다. parent보다 앞서면 swap한다. swap 뒤 아래 edge는 고쳐지고 위반 가능성만 한 level 위로 이동한다. root 도달 또는 비교 통과로 종료하며 height가 <code>⌊log₂n⌋</code>이므로 Θ(log n).</p>
+          <pre style="padding:16px;background:#111827;color:#e5e7eb;border-radius:10px;overflow:auto;font-size:12px;line-height:1.55"><code>bool push(Heap *h, Item x) {
+  if (h-&gt;size == h-&gt;cap) return false; // 실패 전에 검사
+  size_t i = h-&gt;size;
+  h-&gt;a[i] = x;
+  h-&gt;size++;
+  while (i &gt; 0) {
+    size_t p = (i - 1) / 2;
+    if (!before(h-&gt;a[i], h-&gt;a[p])) break;
+    swap_and_fix_map(h, i, p);
+    i = p;
+  }
+  return true;
+}</code></pre>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">6. poll과 sift-down: 더 작은 child를 골라야 한다</h2>
+          <p>root를 저장하고 last를 root로 옮긴 뒤 size를 줄인다. 두 child subtree는 이미 heap이다. 현재 node가 두 child 중 더 앞선 child와 순서가 맞으면 양쪽 모두와 맞고 종료한다. 아니면 그 child와 swap해 위쪽 RI를 복구하고 위반 가능성을 아래 한 경로로 이동한다.</p>
+          <p><strong>최소 반례:</strong> root=9, left=2, right=1에서 임의로 left 2와 swap하면 root=2지만 right=1이 더 작아 RI가 깨진다. 반드시 두 child 중 comparator상 앞선 쪽을 고른다.</p>
+          <pre style="padding:16px;background:#111827;color:#e5e7eb;border-radius:10px;overflow:auto;font-size:12px;line-height:1.55"><code>while (i &lt; size / 2) { // child가 있는 node만: 2*i+1 overflow 방지
+  size_t c = 2*i + 1, r = c + 1;
+  if (r &lt; size &amp;&amp; before(a[r], a[c])) c = r;
+  if (!before(a[c], a[i])) break;
+  swap_and_fix_map(i, c);
+  i = c;
+}</code></pre>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">7. bottom-up heapify가 Θ(n)인 이유</h2>
+          <p>반복 push는 각 항목에 O(log n)을 주어 O(n log n) 상한이다. 그러나 bottom-up은 leaf를 건너뛰고 index <code>⌊n/2⌋−1</code>부터 sift-down한다. 높이 h인 node 수는 대략 <code>n/2^(h+1)</code>이므로 전체 일은 <code>Σ h·n/2^(h+1) &lt; n</code>의 수렴하는 급수, 즉 Θ(n)이다. “각 node가 log n”이라는 느슨한 상한은 실제 높이 분포를 잃는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">8. 복잡도: 무엇을 지원하는지까지 말하라</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#e0f2fe"><th style="padding:7px;border:1px solid #bae6fd">연산</th><th style="padding:7px;border:1px solid #bae6fd">시간</th><th style="padding:7px;border:1px solid #bae6fd">주의</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">peek min</td><td style="padding:7px;border:1px solid #bae6fd">Θ(1)</td><td style="padding:7px;border:1px solid #bae6fd">empty 정책 필요</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">offer / poll</td><td style="padding:7px;border:1px solid #bae6fd">Θ(log n)</td><td style="padding:7px;border:1px solid #bae6fd">배열 resize가 있으면 offer는 amortized 관점도 포함</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">build heap</td><td style="padding:7px;border:1px solid #bae6fd">Θ(n)</td><td style="padding:7px;border:1px solid #bae6fd">bottom-up 기준</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">contains/remove arbitrary</td><td style="padding:7px;border:1px solid #bae6fd">O(n)+O(log n)</td><td style="padding:7px;border:1px solid #bae6fd">heap만으로 위치 탐색은 선형</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">remove/change with map</td><td style="padding:7px;border:1px solid #bae6fd">expected O(1)+O(log n)</td><td style="padding:7px;border:1px solid #bae6fd">hash map RI·메모리·failure path 추가</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">sorted iteration</td><td style="padding:7px;border:1px solid #bae6fd">Θ(n log n)</td><td style="padding:7px;border:1px solid #bae6fd">내부 배열 순회는 정렬 순서가 아니다</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">9. 직접 구현·검증·benchmark</h2>
+          <p>C11 fixed-capacity min-heap에 <code>(priority, sequence)</code> comparator를 구현했다. empty pop, full push의 failure atomicity, 동일 priority FIFO, 전체 RI를 assert하고 ASan/UBSan을 통과시켰다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#e0f2fe"><th style="padding:7px;border:1px solid #bae6fd">300만 항목 · clang -O3</th><th style="padding:7px;border:1px solid #bae6fd">median</th><th style="padding:7px;border:1px solid #bae6fd">comparisons</th><th style="padding:7px;border:1px solid #bae6fd">swaps</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">repeated push</td><td style="padding:7px;border:1px solid #bae6fd">35.29 ms</td><td style="padding:7px;border:1px solid #bae6fd">6,842,573</td><td style="padding:7px;border:1px solid #bae6fd">3,842,588</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">bottom-up heapify</td><td style="padding:7px;border:1px solid #bae6fd">28.17 ms</td><td style="padding:7px;border:1px solid #bae6fd">5,644,003</td><td style="padding:7px;border:1px solid #bae6fd">2,231,800</td></tr>
+          </table>
+          <p><strong>해석 한계:</strong> 한 Mac·한 compiler·warm memory의 microbenchmark다. timer granularity, turbo/thermal, allocator, input 분포, comparator 비용을 고정하고 median·p95와 hardware counter를 함께 보라. Θ(n)이 모든 n에서 빠르다는 뜻도 아니다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">10. Memory/locality와 표현 trade-off</h2>
+          <ul style="padding-left:22px">
+            <li><strong>연속 배열:</strong> pointer tree보다 node overhead·allocation·cache miss가 작다. 단, growth 때 peak memory와 element move가 생긴다.</li>
+            <li><strong>payload 간접화:</strong> 큰 object 전체를 swap하지 말고 작은 handle/index를 heap에 두면 write traffic이 줄지만 indirection이 늘어난다.</li>
+            <li><strong>d-ary:</strong> height <code>log_d n</code>은 낮지만 pop마다 d child를 비교한다. decrease-key가 많은 graph workload와 cache line 크기로 실측한다.</li>
+            <li><strong>index map:</strong> 취소는 빨라지나 모든 swap이 map write를 동반하고 두 구조의 원자적 RI가 필요하다.</li>
+            <li><strong>dynamic capacity:</strong> geometric growth는 append allocation을 amortize하지만 실시간 tail SLA에는 reserve/bounded arena가 더 예측 가능할 수 있다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">11. Error handling과 놓치기 쉬운 것</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#e0f2fe"><th align="left" style="padding:7px;border:1px solid #bae6fd">실패/위험</th><th align="left" style="padding:7px;border:1px solid #bae6fd">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #bae6fd">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">empty peek/poll</td><td style="padding:7px;border:1px solid #bae6fd">bool/Option/exception 계약 고정</td><td style="padding:7px;border:1px solid #bae6fd">a[0] 무조건 읽기</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">full/OOM</td><td style="padding:7px;border:1px solid #bae6fd">reserve 성공 후 size commit; 실패 시 원상태</td><td style="padding:7px;border:1px solid #bae6fd">size부터 증가</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">index overflow</td><td style="padding:7px;border:1px solid #bae6fd"><code>i&lt;size/2</code> 확인 후 child 계산</td><td style="padding:7px;border:1px solid #bae6fd"><code>2*i+1</code> 선계산</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">mutable key/comparator</td><td style="padding:7px;border:1px solid #bae6fd">remove+reinsert 또는 전용 change API</td><td style="padding:7px;border:1px solid #bae6fd">heap 안 priority 직접 수정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">tie nondeterminism</td><td style="padding:7px;border:1px solid #bae6fd">overflow-checked monotonic sequence</td><td style="padding:7px;border:1px solid #bae6fd">library tie 순서를 FIFO라 가정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">lazy stale 증가</td><td style="padding:7px;border:1px solid #bae6fd">live/stale metric, threshold rebuild</td><td style="padding:7px;border:1px solid #bae6fd">무제한 duplicate entry</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">concurrency</td><td style="padding:7px;border:1px solid #bae6fd">전체 offer/poll/map repair를 lock</td><td style="padding:7px;border:1px solid #bae6fd">array swap을 atomic이라 가정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bae6fd">clock jump</td><td style="padding:7px;border:1px solid #bae6fd">duration은 monotonic clock, wall time 변환 분리</td><td style="padding:7px;border:1px solid #bae6fd">NTP jump를 deadline 순서에 노출</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">12. 언어 library를 읽을 때 확인할 계약</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Python <code>heapq</code>:</strong> list 자체를 min-heap으로 쓰며 <code>heapify</code>는 linear time. task priority 변경/삭제 recipe는 entry finder와 removed marker를 사용한다.</li>
+            <li><strong>Java <code>PriorityQueue</code>:</strong> head는 least element, tie는 임의이며 iterator는 정렬 순서를 보장하지 않는다. offer/poll O(log n), contains/remove(Object) O(n), thread-safe가 아니다.</li>
+            <li><strong>Rust <code>BinaryHeap</code>:</strong> 기본 max-heap. <code>Reverse</code>로 min-heap을 만들 수 있고, heap 안에서 ordering이 바뀌면 논리 오류다.</li>
+          </ul>
+          <p>언어 이름만 암기하지 말고 min/max 방향, tie, iteration order, arbitrary remove, mutation, concurrency, allocation failure 계약을 확인한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">13. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li>PQ ADT와 binary heap 구현을 구분하고 workload 연산 빈도로 선택한다.</li>
+            <li>comparator를 <code>(priority, sequence)</code>처럼 total order로 만들고 key를 immutable하게 둔다.</li>
+            <li>bulk 입력은 reserve 후 bottom-up heapify하며 peak memory까지 측정한다.</li>
+            <li>취소가 드물면 lazy deletion, 많고 memory가 빡빡하면 id→index map을 비교한다.</li>
+            <li>debug에서 bounds·heap-order·map 역참조를 매 연산 검사하고 production에서는 sampling한다.</li>
+            <li>size, oldest lateness, offer rejection, stale ratio, sift steps, lock hold p99를 관측한다.</li>
+            <li>검증된 library를 우선하고 concurrency가 필요하면 synchronized wrapper/전용 concurrent queue를 쓴다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">14. 55분 실습과 테스트</h2>
+          <ol style="padding-left:22px">
+            <li><strong>10분:</strong> 배열 index 0..9의 parent/children을 그린다.</li>
+            <li><strong>15분:</strong> stable min-heap push/peek/pop과 RI validator를 구현한다.</li>
+            <li><strong>10분:</strong> empty/full, all-equal, sorted/reverse, duplicate id, sequence overflow 경계를 테스트한다.</li>
+            <li><strong>10분:</strong> random 연산을 정렬 vector/reference PQ와 differential test한다.</li>
+            <li><strong>10분:</strong> repeated push와 heapify의 comparisons·swaps·median/p95를 크기별 측정한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q1. Heap은 정렬되지 않았는데 왜 root가 최소인가요?</strong><br>모든 parent≤child라는 edge RI를 임의 node까지의 경로에 반복 적용한다. 귀납적으로 root≤모든 node이므로 전역 최소다. sibling 사이에는 순서가 없다고 덧붙인다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q2. build-heap이 왜 O(n)이지 O(n log n)이 아닌가요?</strong><br>높이 h인 node가 약 n/2^(h+1)개이고 비용 O(h)이므로 Σh·n/2^(h+1)=O(n). 대부분의 node가 leaf 근처라 거의 움직이지 않는다는 직관과 Θ(n) 하한도 말한다.</div>
+          <div style="padding:16px;background:#e0f2fe;border-radius:10px"><strong>Q3. 취소 가능한 scheduler PQ를 어떻게 설계하나요?</strong><br>id→index map으로 O(log n) remove하며 swap마다 양방향 RI를 고치거나, versioned lazy deletion 후 pop 시 stale을 버린다. cancellation 비율·memory·failure atomicity·lock·tie·clock 정책으로 선택하고 stale rebuild metric까지 답한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>min-heap에서 배열 전체를 오름차순 순회할 수 없는 이유는?</li>
+            <li>sift-down에서 작은 child를 먼저 골라야 하는 최소 반례는?</li>
+            <li>마지막 internal node index는?</li>
+            <li>heapify 합에서 높이 h인 node 수가 지수적으로 줄어드는 의미는?</li>
+            <li>같은 priority FIFO를 위해 어떤 comparator를 쓰는가?</li>
+            <li>임의 remove가 heap만으로 O(n)인 이유는?</li>
+            <li>Day 9 geometric growth가 offer worst-case와 amortized cost에 주는 영향은?</li>
+            <li>Day 15 hash map을 붙이면 어떤 새 RI와 failure path가 생기는가?</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 26 · trie와 prefix search</strong><br>비교 기반 tree 대신 문자열 edge를 따라가며 prefix query를 푼다. alphabet 크기, compressed edge, Unicode normalization, memory locality를 연결한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0369a1">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/40d4851e550507ca14dc778b9b2266cc_MIT6_006S20_lec8.pdf" style="color:#0369a1">MIT 6.006 Lecture 8: Binary Heaps</a> — PQ ADT, implicit tree, sift, heapify proof.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/701c2f339890cbf9c0c2a3495d007f26_MIT6_006S20_r08.pdf" style="color:#0369a1">MIT 6.006 Recitation 8: Binary Heaps</a> — representation과 operations review.</li>
+            <li><a href="https://docs.python.org/3/library/heapq.html" style="color:#0369a1">Python <code>heapq</code> official docs</a> — min-heap API, linear heapify, PQ implementation notes.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/PriorityQueue.html" style="color:#0369a1">Java SE 26 <code>PriorityQueue</code></a> — ordering, complexity, iteration, concurrency contract.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html" style="color:#0369a1">Rust <code>BinaryHeap</code> official docs</a> — max-heap API, mutation logic error, complexity.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:12px">측정 환경과 구현은 학습용이다. production 선택은 실제 workload, SLA, 언어 library 계약으로 재검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
