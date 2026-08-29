@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 28 · 리뷰: ordered map 선택 방어</title>
+</head>
+<body style="margin:0;background:#111827;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#064e3b;color:#ecfdf5">
+          <div style="color:#a7f3d0;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 4 / DAY 28 · REVIEW</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">“트리가 빠릅니다”가 아니라<br>요구 연산과 실패 비용으로 방어하라</h1>
+          <p style="margin:0;color:#d1fae5">Ordered Map ADT → representation invariant → workload → locality → production risk · 180분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #059669;background:#d1fae5;border-radius:10px"><strong>한 줄 요약</strong><br>자료구조 선택은 이름 맞히기가 아니라 필요한 연산·보장·입력 분포를 계약으로 고정하고, sorted array·균형 트리·heap·trie·hash의 불변식과 실제 locality·운영 실패 비용을 비교해 가장 단순한 표현을 고르는 일이다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Map</strong></td><td style="padding:7px;border:1px solid #a7f3d0">key 하나를 value 하나에 연결하는 ADT. 같은 key를 다시 put할 때 replace인지 reject인지도 계약이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Ordered Map</strong></td><td style="padding:7px;border:1px solid #a7f3d0">key의 전체 순서를 유지해 exact lookup뿐 아니라 predecessor·successor·range를 제공하는 Map.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Total order</strong></td><td style="padding:7px;border:1px solid #a7f3d0">어떤 두 key도 일관되게 비교되고, 비교가 반사·반대칭/삼분·추이 규칙을 만족하는 순서.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Comparator</strong></td><td style="padding:7px;border:1px solid #a7f3d0">두 key의 작음·같음·큼을 결정하는 함수. 저장 중 결과가 바뀌거나 추이성이 깨지면 인덱스가 거짓말한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>lower/upper bound</strong></td><td style="padding:7px;border:1px solid #a7f3d0"><code>lower_bound(x)</code>는 처음으로 x 이상, <code>upper_bound(x)</code>는 처음으로 x 초과인 위치.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Predecessor / successor</strong></td><td style="padding:7px;border:1px solid #a7f3d0">주어진 key보다 바로 작은 / 바로 큰 저장 key. floor·ceiling은 등호 포함 여부가 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Range query</strong></td><td style="padding:7px;border:1px solid #a7f3d0"><code>[lo,hi)</code>처럼 순서 구간에 속한 k개 항목을 찾는 연산. 비용은 탐색과 출력 k를 분리한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Representation invariant</strong></td><td style="padding:7px;border:1px solid #a7f3d0">모든 공개 연산 전후에 내부 표현이 반드시 만족해야 하는 조건. 줄여서 RI.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Operation mix</strong></td><td style="padding:7px;border:1px solid #a7f3d0">lookup·insert·delete·range가 실제 트래픽에서 차지하는 비율과 burst·skew.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Locality</strong></td><td style="padding:7px;border:1px solid #a7f3d0">곧 사용할 데이터가 가까운 cache line/page에 있어 느린 메모리·I/O 접근을 줄이는 성질.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Output-sensitive</strong></td><td style="padding:7px;border:1px solid #a7f3d0">결과 k개를 반환하는 최소 비용 Ω(k)를 복잡도에 표시하는 분석. 예: O(log n+k).</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>p99 / tail latency</strong></td><td style="padding:7px;border:1px solid #a7f3d0">요청 99%가 그 이하에 끝나는 지연. 평균이 숨기는 rehash·GC·lock·page fault를 드러낸다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Static / dynamic</strong></td><td style="padding:7px;border:1px solid #a7f3d0">빌드 뒤 거의 읽기만 하는가 / 요청 중 insert·delete가 계속 일어나는가의 구분.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">2. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> key→value 인덱스를 설계한다. 처음부터 “RB tree를 쓰자”가 아니라 다음 workload contract를 입력으로 받는다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">먼저 묻는 것</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">선택을 바꾸는 답</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">필수 연산</td><td style="padding:7px;border:1px solid #a7f3d0">exact만 / min만 / predecessor·range / prefix</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">크기와 변화</td><td style="padding:7px;border:1px solid #a7f3d0">n 상한, read:write, batch build, delete·churn</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">보장</td><td style="padding:7px;border:1px solid #a7f3d0">expected vs worst-case, p99, memory cap, persistence</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">key 의미</td><td style="padding:7px;border:1px solid #a7f3d0">numeric·locale·Unicode·case folding·duplicate·NaN</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">실행 환경</td><td style="padding:7px;border:1px solid #a7f3d0">single thread, concurrent, in-memory, SSD/page, snapshot</td></tr>
+          </table>
+          <p><strong>출력:</strong> 선택한 구조, ADT/RI, 복잡도 표, memory estimate, benchmark 계획, 실패·복구 정책. “평균 O(log n)” 한 줄은 설계 결과가 아니다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">3. Architecture 그림: 요구에서 운영까지</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:29%;padding:12px;background:#059669;color:white;border-radius:8px"><strong>① Query contract</strong></td><td style="padding:12px;background:#ecfdf5">exact? min/max? range? prefix? rank/select? 결과 순서?</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ comparator·duplicate·empty·error semantics 고정</td></tr>
+            <tr><td style="padding:12px;background:#059669;color:white;border-radius:8px"><strong>② Workload</strong></td><td style="padding:12px;background:#ecfdf5">n, read/write mix, skew, batch, concurrency, memory/page budget</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 후보별 RI·worst case·constant factor 비교</td></tr>
+            <tr><td style="padding:12px;background:#059669;color:white;border-radius:8px"><strong>③ Representation</strong></td><td style="padding:12px;background:#ecfdf5">sorted array / AVL·RB / heap / trie / hash / B-tree</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ differential·property·fault test + representative benchmark</td></tr>
+            <tr><td style="padding:12px;background:#064e3b;color:white;border-radius:8px"><strong>④ Production loop</strong></td><td style="padding:12px;background:#ecfdf5">p50/p99, memory, rebalance/split, contention, corruption → 재평가</td></tr>
+          </table>
+          <p>아키텍처의 핵심 경계는 <strong>논리 계약</strong>과 <strong>물리 표현</strong>이다. 호출자는 predecessor와 range를 요구할 뿐 RB 색이나 array index를 알아서는 안 된다. 그래야 workload가 바뀔 때 표현만 교체할 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">4. Ordered Map ADT와 계약</h2>
+          <ul style="padding-left:22px">
+            <li><code>get(k)</code>, <code>put(k,v)</code>, <code>remove(k)</code>: missing·duplicate 결과를 typed value로 반환한다.</li>
+            <li><code>lower(k)</code>, <code>floor(k)</code>, <code>ceiling(k)</code>, <code>higher(k)</code>: 경계 포함 여부를 이름과 테스트로 고정한다.</li>
+            <li><code>range(loInclusive, hiExclusive)</code>: 정렬된 snapshot인지 live view인지, iteration 중 mutation을 허용하는지 정의한다.</li>
+            <li><code>first/last</code>: empty를 null, optional, exception 중 무엇으로 표현하는지 정한다.</li>
+            <li>key equivalence는 comparator가 0을 반환하는 관계다. 언어의 <code>equals</code>/hash와 다르면 같은 논리 key가 둘로 보이거나 덮어써질 수 있다.</li>
+          </ul>
+          <p><strong>추상 불변식:</strong> 각 논리 key는 최대 한 mapping을 가지며, iteration은 comparator 순서이고, 모든 navigation 결과는 정의한 strict/non-strict 경계를 만족한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">5. 후보 표현과 representation invariant</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">표현</th><th style="padding:7px;border:1px solid #a7f3d0">핵심 RI</th><th style="padding:7px;border:1px solid #a7f3d0">본질적 강점 / 한계</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Sorted array</strong></td><td style="padding:7px;border:1px solid #a7f3d0"><code>0≤size≤capacity</code>, key가 엄격히 증가</td><td style="padding:7px;border:1px solid #a7f3d0">최고 locality·range / 중간 update O(n)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>AVL/RB tree</strong></td><td style="padding:7px;border:1px solid #a7f3d0">전역 BST interval + height/color balance</td><td style="padding:7px;border:1px solid #a7f3d0">동적 ordered map / pointer·rotation 비용</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Binary heap</strong></td><td style="padding:7px;border:1px solid #a7f3d0">parent≤children + complete array</td><td style="padding:7px;border:1px solid #a7f3d0">한쪽 extreme / 전체 순서·range 없음</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Trie/radix</strong></td><td style="padding:7px;border:1px solid #a7f3d0">root→node path label이 prefix</td><td style="padding:7px;border:1px solid #a7f3d0">prefix O(L) / alphabet·Unicode·memory</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Hash table</strong></td><td style="padding:7px;border:1px solid #a7f3d0">equal⇒same hash, probe/chain reachability</td><td style="padding:7px;border:1px solid #a7f3d0">exact expected O(1) / 순서 없음, collision tail</td></tr>
+          </table>
+          <p>서로 다른 RI는 서로 다른 질문에 답한다. heap의 parent-child 순서는 root minimum만 증명한다. trie의 path 순서는 문자열 prefix를 증명한다. 어느 것도 일반적인 comparator range를 자동으로 증명하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">6. 시간·공간·amortized complexity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#d1fae5"><th style="padding:6px;border:1px solid #a7f3d0">표현</th><th style="padding:6px;border:1px solid #a7f3d0">get</th><th style="padding:6px;border:1px solid #a7f3d0">put/remove</th><th style="padding:6px;border:1px solid #a7f3d0">min</th><th style="padding:6px;border:1px solid #a7f3d0">range/prefix</th><th style="padding:6px;border:1px solid #a7f3d0">공간·숨은 비용</th></tr>
+            <tr><td style="padding:6px;border:1px solid #a7f3d0">sorted array</td><td style="padding:6px;border:1px solid #a7f3d0">O(log n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(1)</td><td style="padding:6px;border:1px solid #a7f3d0">O(log n+k)</td><td style="padding:6px;border:1px solid #a7f3d0">O(n), resize 상각·memmove</td></tr>
+            <tr><td style="padding:6px;border:1px solid #a7f3d0">AVL/RB</td><td style="padding:6px;border:1px solid #a7f3d0">O(log n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(log n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(log n), cached O(1)</td><td style="padding:6px;border:1px solid #a7f3d0">O(log n+k)</td><td style="padding:6px;border:1px solid #a7f3d0">O(n), 2+ pointers/node</td></tr>
+            <tr><td style="padding:6px;border:1px solid #a7f3d0">heap</td><td style="padding:6px;border:1px solid #a7f3d0">O(n) arbitrary</td><td style="padding:6px;border:1px solid #a7f3d0">insert O(log n), arbitrary remove O(n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(1), pop O(log n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(n) scan</td><td style="padding:6px;border:1px solid #a7f3d0">O(n), array locality</td></tr>
+            <tr><td style="padding:6px;border:1px solid #a7f3d0">trie</td><td style="padding:6px;border:1px solid #a7f3d0">O(L)</td><td style="padding:6px;border:1px solid #a7f3d0">O(L)</td><td style="padding:6px;border:1px solid #a7f3d0">정의에 따라</td><td style="padding:6px;border:1px solid #a7f3d0">O(P+출력)</td><td style="padding:6px;border:1px solid #a7f3d0">O(total symbols), branching 표현</td></tr>
+            <tr><td style="padding:6px;border:1px solid #a7f3d0">hash</td><td style="padding:6px;border:1px solid #a7f3d0">expected O(1), worst O(n)</td><td style="padding:6px;border:1px solid #a7f3d0">expected O(1), resize 상각</td><td style="padding:6px;border:1px solid #a7f3d0">O(n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(n)</td><td style="padding:6px;border:1px solid #a7f3d0">O(capacity), load/tombstone</td></tr>
+          </table>
+          <p><strong>L</strong>은 key 길이, <strong>P</strong>는 prefix 길이, <strong>k</strong>는 반환 항목 수다. AVL/RB의 O(log n)은 worst-case이고, hash의 O(1)은 보통 분포 가정 아래 expected/amortized다. API SLO가 p99라면 이 차이는 장식이 아니다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">7. Correctness: range가 정확한 이유</h2>
+          <p>BST node x가 허용하는 전역 interval을 <code>(low,high)</code>라 하자. <code>range(x,lo,hi)</code>는 다음처럼 pruning한다.</p>
+          <pre style="white-space:pre-wrap;padding:14px;background:#0f172a;color:#e2e8f0;border-radius:10px;font-size:12px">range(x, lo, hi):
+  if x == null: return
+  if lo &lt; x.key: range(x.left, lo, hi)
+  if lo &lt;= x.key and x.key &lt; hi: emit(x)
+  if x.key &lt; hi: range(x.right, lo, hi)</pre>
+          <ul style="padding-left:22px">
+            <li><strong>Soundness:</strong> emit 조건이 직접 <code>lo≤key&lt;hi</code>이므로 범위 밖 항목은 나오지 않는다.</li>
+            <li><strong>Completeness:</strong> <code>x.key≤lo</code>면 왼쪽 모든 key는 더 작아 답이 될 수 없고, <code>x.key≥hi</code>면 오른쪽 모두 답이 아니다. 잘라낸 subtree에 정답이 없으므로 모든 정답은 방문된다.</li>
+            <li><strong>Order:</strong> left→node→right 순회와 BST RI 때문에 출력은 comparator 오름차순이다.</li>
+            <li><strong>비용:</strong> 경계로 내려가는 O(h)와 실제 출력 k를 합쳐 균형 트리에서 O(log n+k).</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">8. 최소 반례로 잘못된 선택 깨기</h2>
+          <div style="padding:16px;background:#ecfdf5;border-radius:10px;margin-bottom:10px"><strong>Heap을 정렬 인덱스로 착각</strong><br>min-heap <code>[1,5,2,9,7,8,6]</code>은 RI를 만족하지만 array 순서는 정렬이 아니다. 2의 successor가 index 이웃이라는 보장도, [5,8) 항목이 연속이라는 보장도 없다.</div>
+          <div style="padding:16px;background:#ecfdf5;border-radius:10px;margin-bottom:10px"><strong>Comparator 추이성 위반</strong><br>A&lt;B, B&lt;C인데 C&lt;A가 되면 한 insert path와 search path가 서로 다른 subtree를 선택한다. rotation은 inorder를 보존해도 잘못 정의된 “order”를 고칠 수 없다.</div>
+          <div style="padding:16px;background:#ecfdf5;border-radius:10px"><strong>문자열 순서와 숫자 순서 혼동</strong><br>trie의 code-point lexicographic order에서는 “10”이 “2”보다 먼저 올 수 있다. 숫자 범위가 필요하면 parse된 숫자 comparator 또는 order-preserving encoding이 필요하다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">9. 직접 구현: 계약을 oracle로 검증하기</h2>
+          <p>구현체보다 단순한 reference model을 둔다. 테스트에서는 production 구현과 작은 sorted vector oracle에 같은 operation trace를 적용한다.</p>
+          <pre style="white-space:pre-wrap;padding:14px;background:#0f172a;color:#e2e8f0;border-radius:10px;font-size:12px">for op in generated_trace:
+  expected = sorted_vector.apply(op)
+  actual   = candidate.apply(op)
+  assert actual == expected
+  assert candidate.size == oracle.size
+  assert candidate.keys() is strictly ordered
+  assert navigation_boundaries(candidate)
+  assert representation_invariant(candidate)</pre>
+          <p><strong>필수 trace:</strong> empty, one node, ascending/descending insert, duplicate replace/reject, root·leaf·two-child delete, absent remove, min/max key, equal comparator, mutation 중 iterator, allocation failure. 매 seed와 최소화된 counterexample을 저장한다.</p>
+          <p><strong>Augmentation 주의:</strong> rank/select를 위해 subtree size를 붙이면 모든 rotation·delete에서 <code>size=1+left.size+right.size</code>도 RI가 된다. core tree만 검증하고 metadata를 빼먹으면 논리적으로 틀린 rank가 조용히 나온다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">10. 누적 실측: Big-O가 말하지 않는 것</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">이전 랩 증거</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">관측</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">오늘의 결론</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">Day 23 · 1,048,575 keys, 100만 hit</td><td style="padding:7px;border:1px solid #a7f3d0">균형 BST 150.639 ms, sorted array 77.823 ms</td><td style="padding:7px;border:1px solid #a7f3d0">둘 다 O(log n)이어도 contiguous locality가 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">Day 24 · AVL</td><td style="padding:7px;border:1px solid #a7f3d0">sorted/random build 155.251/380.109 ms, lookup 219.182/143.825 ms</td><td style="padding:7px;border:1px solid #a7f3d0">낮은 logical depth만으로 실제 시간을 예측하지 못한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">Day 25 · 300만 heap build</td><td style="padding:7px;border:1px solid #a7f3d0">repeated push 35.286 ms, bottom-up 28.172 ms</td><td style="padding:7px;border:1px solid #a7f3d0">같은 최종 RI라도 build path와 상각 비용이 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">Day 26 · trie</td><td style="padding:7px;border:1px solid #a7f3d0">dense 108.501 ms/154 MB, sparse 681.754 ms/33 MB</td><td style="padding:7px;border:1px solid #a7f3d0">시간·메모리·alphabet 분포를 함께 최적화해야 한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">Day 27 · scheduler cancel</td><td style="padding:7px;border:1px solid #a7f3d0">indexed 0.379 ms, linear 309.196 ms</td><td style="padding:7px;border:1px solid #a7f3d0">보조 index는 새 RI 비용과 함께 병목 연산을 바꾼다.</td></tr>
+          </table>
+          <p>숫자는 학습용 한 환경의 5회 중앙값 등 각 Day의 조건에서 나온 값이다. 결론은 “array가 항상 2배 빠르다”가 아니라 <strong>실제 후보·분포·allocator·layout으로 다시 측정하라</strong>다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">11. Benchmark를 설계하는 법</h2>
+          <ol style="padding-left:22px">
+            <li>production trace에서 n, key length, hit/miss, read/write/range 비율, skew와 burst를 추출한다.</li>
+            <li>build·steady-state·churn·recovery를 분리한다. setup과 allocator warm-up을 query time에 섞지 않는다.</li>
+            <li>모든 후보가 동일한 key/value ownership, comparator, duplicate semantics를 갖게 한다.</li>
+            <li>wall time 외에 comparisons, allocations, bytes/entry, cache miss, rotations/splits, lock wait, p50/p95/p99를 본다.</li>
+            <li>결과를 사용해 dead-code elimination을 막고, seed·compiler·flags·CPU pinning·sample count를 기록한다.</li>
+            <li>평균만 비교하지 말고 rehash, compaction, page split, GC가 포함된 tail과 memory peak를 보고한다.</li>
+          </ol>
+          <p><strong>Benchmark anti-pattern:</strong> sorted input 하나, 1000개뿐인 microbenchmark, 서로 다른 allocator, hash는 warm cache인데 tree는 cold cache, 출력 k가 다른 range, sanitizer build의 성능 수치, 한 번 실행의 최솟값.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">12. 선택 행렬: 요구가 답을 만든다</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">Workload</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">우선 후보</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">방어와 재검토 조건</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">batch build, read-mostly, range 많음</td><td style="padding:7px;border:1px solid #a7f3d0">sorted array</td><td style="padding:7px;border:1px solid #a7f3d0">locality·compact; update가 SLA에 들어오면 tree/B-tree</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">동적 predecessor·range, worst-case 필요</td><td style="padding:7px;border:1px solid #a7f3d0">AVL/RB tree</td><td style="padding:7px;border:1px solid #a7f3d0">O(log n); node overhead·concurrency·allocator 측정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">다음 deadline/최소값만 반복 제거</td><td style="padding:7px;border:1px solid #a7f3d0">min-heap</td><td style="padding:7px;border:1px solid #a7f3d0">O(1) peek; arbitrary cancel이면 id index·lazy debt 추가</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">autocomplete·longest prefix</td><td style="padding:7px;border:1px solid #a7f3d0">trie/radix</td><td style="padding:7px;border:1px solid #a7f3d0">O(L); normalization·ranking·memory budget 필수</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">exact get/put만, order 불필요</td><td style="padding:7px;border:1px solid #a7f3d0">hash table</td><td style="padding:7px;border:1px solid #a7f3d0">expected O(1); hostile key·resize p99·iteration 비결정성</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">disk/page 기반 큰 ordered index</td><td style="padding:7px;border:1px solid #a7f3d0">B/B+tree</td><td style="padding:7px;border:1px solid #a7f3d0">높이보다 page I/O·fan-out·split/recovery가 지배 — Day 29</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">13. Memory와 locality를 계산하기</h2>
+          <p>node tree가 key 16B, value 8B, left/right/parent 24B, color·padding 8B라면 대략 56B/entry이고 allocator metadata와 fragmentation은 별도다. sorted array의 같은 payload가 24B/entry라면 1천만 건에서 이론상 차이만 약 320MB다.</p>
+          <ul style="padding-left:22px">
+            <li>pointer tree search는 log n개의 불연속 node를 따라가며 cache/TLB miss가 날 수 있다.</li>
+            <li>sorted array binary search도 멀리 점프하지만 node가 조밀하고 range scan은 연속이다.</li>
+            <li>B-tree는 한 node/page에 여러 key를 넣어 fan-out을 키우고 pointer chasing·page read 수를 줄인다.</li>
+            <li>intrusive RB tree는 node와 payload의 간접 참조 한 층을 줄일 수 있지만 lifetime·API coupling을 감수한다.</li>
+          </ul>
+          <p>메모리 예산은 payload만 세지 않는다. capacity slack, allocator header, parent/metadata, duplicate version, tombstone, snapshot, rebuild 중 old+new 동시 보유까지 peak RSS로 계산한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">14. Concurrency·persistence trade-off</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Thread-safe ≠ compound atomic:</strong> <code>get</code>과 <code>put</code>이 각각 안전해도 check-then-act는 원자적이지 않다. <code>putIfAbsent</code>, transaction, lock 범위를 계약한다.</li>
+            <li><strong>Iterator:</strong> fail-fast는 동시성 correctness 보장이 아니다. weakly consistent, snapshot, locked iterator 중 하나를 명시한다.</li>
+            <li><strong>Fine-grained tree lock:</strong> rotation이 여러 node를 바꾸므로 lock order·version·reclamation이 어렵다. 검증된 concurrent skip list/map을 우선한다.</li>
+            <li><strong>Persistence:</strong> in-memory RI만으로 crash consistency가 생기지 않는다. WAL → page update → durable commit 순서와 torn write·replay를 설계한다.</li>
+            <li><strong>Online rebuild:</strong> dual-write 또는 versioned snapshot에서 cutover 선형화 지점, catch-up, rollback, memory peak를 정의한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">15. Error handling과 놓치기 쉬운 것</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">실패/경계</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">위험한 처리</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">null·NaN·locale·Unicode</td><td style="padding:7px;border:1px solid #a7f3d0">canonicalization/version과 total order 테스트</td><td style="padding:7px;border:1px solid #a7f3d0">환경 기본 locale에 의존</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">mutable key</td><td style="padding:7px;border:1px solid #a7f3d0">immutable key/copy, remove 후 재삽입</td><td style="padding:7px;border:1px solid #a7f3d0">tree/hash 안에서 비교 필드 변경</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">OOM during put</td><td style="padding:7px;border:1px solid #a7f3d0">먼저 allocate, commit 후 size 변경</td><td style="padding:7px;border:1px solid #a7f3d0">RI 일부를 바꾼 뒤 오류 반환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">duplicate key</td><td style="padding:7px;border:1px solid #a7f3d0">replace/reject/multimap를 API로 구분</td><td style="padding:7px;border:1px solid #a7f3d0">구조마다 암묵 동작이 다름</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">range bound overflow</td><td style="padding:7px;border:1px solid #a7f3d0">반열린 구간과 직접 comparator</td><td style="padding:7px;border:1px solid #a7f3d0"><code>hi+1</code>로 inclusive 변환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">adversarial input</td><td style="padding:7px;border:1px solid #a7f3d0">balanced tree/seeded hash, size·depth cap</td><td style="padding:7px;border:1px solid #a7f3d0">평균 가정만 믿고 무제한 수용</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">iterator lifetime</td><td style="padding:7px;border:1px solid #a7f3d0">invalidation 규칙·ownership·epoch 명시</td><td style="padding:7px;border:1px solid #a7f3d0">delete 후 node pointer 사용</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">16. 실무 Best Practice와 Anti-pattern</h2>
+          <ol style="padding-left:22px">
+            <li>ADT와 SLO를 먼저 쓰고 표준 라이브러리의 검증된 구현을 기본값으로 둔다.</li>
+            <li>comparator/equality/hash/canonicalization을 한 모듈에서 versioning하고 property test한다.</li>
+            <li>RI validator와 작은 oracle differential test를 debug·fuzz·migration 검증에 쓴다.</li>
+            <li>실제 operation mix로 시간·bytes/entry·p99·peak memory를 함께 benchmark한다.</li>
+            <li>복합 인덱스(heap+id map, tree+augmentation)는 원자적 갱신과 교차 RI를 선언한다.</li>
+            <li>capacity, timeout, cancel, snapshot, iterator, shutdown을 정상 API 경로로 설계한다.</li>
+            <li>지표가 임계값을 넘을 때 rebuild/reindex/구조 전환하는 runbook과 rollback을 준비한다.</li>
+          </ol>
+          <p><strong>Anti-pattern:</strong> “hash가 O(1)이니 항상 빠름”, “균형 트리면 cache도 좋음”, “heap array는 거의 정렬됨”, “trie는 key 수와 무관하니 무조건 O(1)”, custom concurrent tree부터 구현, benchmark 한 수치로 영구 결정.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">17. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q1. ordered map 구현으로 RB tree와 sorted array 중 무엇을 고르겠습니까?</strong><br>먼저 read/write/range 비율, n, worst-case, memory와 concurrency를 묻는다. static/read-mostly면 array의 O(log n) lookup·O(log n+k) range·locality를, dynamic이면 RB의 worst-case O(log n) update를 선택한다. 실제 p99·bytes/entry와 migration 조건까지 제시한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q2. min-heap으로 range query도 처리할 수 있지 않나요?</strong><br>heap RI는 parent≤children뿐이라 sibling/subtree 간 전체 순서가 없다. root minimum은 O(1)이지만 arbitrary search/range는 O(n)이다. range가 핵심이면 ordered tree/B-tree, exact만이면 hash를 고려하고 heap은 priority queue 계약에 제한한다.</div>
+          <div style="padding:16px;background:#d1fae5;border-radius:10px"><strong>Q3. O(log n) 트리가 O(log n) binary search보다 느린 이유와 개선법은?</strong><br>pointer chasing, allocator fragmentation, branch prediction, cache/TLB miss, 큰 node를 말한다. compact node/B-tree·arena·intrusive layout, batched lookup, cached extreme을 후보로 두되 write cost와 complexity를 실제 workload로 검증한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">18. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>ordered map ADT가 hash map ADT보다 추가로 약속하는 연산은 무엇인가?</li>
+            <li>range query O(log n+k)에서 k를 제거할 수 없는 이유는?</li>
+            <li>heap array의 인접 원소가 successor가 아닌 최소 반례를 설명하라.</li>
+            <li>comparator가 equals와 불일치하면 replace/get semantics에 어떤 일이 생기는가?</li>
+            <li>read-mostly 1천만 건에서 sorted array의 O(n) update가 허용될 수 있는 조건은?</li>
+            <li>AVL이 더 얕아도 RB나 array보다 실제 lookup이 느릴 수 있는 이유는?</li>
+            <li>trie dense와 sparse 표현 중 선택할 때 alphabet 외에 무엇을 측정해야 하는가?</li>
+            <li>heap+id index에서 heap order만 검증하면 놓치는 RI는?</li>
+            <li>concurrent map의 thread-safe get/put이 check-then-act를 안전하게 만들지 못하는 이유는?</li>
+            <li>DB ordered index가 pointer BST 대신 page-sized B-tree를 선호하는 이유를 예측하라.</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 29 · B-tree/B+tree와 page locality</strong><br>fan-out이 높이를 어떻게 줄이는지, internal/leaf page RI와 split 정당성, B+tree leaf link, buffer pool·WAL·page split amplification을 연결한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/NavigableMap.html" style="color:#047857">Java SE 26 <code>NavigableMap</code></a> — lower/floor/ceiling/higher, bounded view와 ordered map 계약.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeMap.html" style="color:#047857">Java SE 26 <code>TreeMap</code></a> — Red-Black 기반, get/put/remove worst-case log n과 comparator 계약.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentSkipListMap.html" style="color:#047857">Java SE 26 <code>ConcurrentSkipListMap</code></a> — concurrent navigable map과 expected average log n.</li>
+            <li><a href="https://docs.kernel.org/core-api/rbtree.html" style="color:#047857">Linux Kernel rbtree</a> — embedded node locality, 사용자 책임 locking, ordered traversal와 cached leftmost.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.BTreeMap.html" style="color:#047857">Rust <code>BTreeMap</code></a> — cache efficiency와 comparison work의 B-tree trade-off.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/40d4851e550507ca14dc778b9b2266cc_MIT6_006S20_lec8.pdf" style="color:#047857">MIT 6.006 Lecture 8</a> — priority queue ADT와 binary heap의 최적화 대상.</li>
+            <li><a href="https://docs.python.org/3.14/library/heapq.html" style="color:#047857">Python 3.14 <code>heapq</code></a> — array heap invariant, root extreme, linear heapify.</li>
+            <li><a href="https://www.postgresql.org/docs/current/btree.html" style="color:#047857">PostgreSQL 18 B-Tree Indexes</a> — total order 법칙, page 구조·split·version churn; Day 29 연결.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:12px">복잡도는 비교·RAM model의 이론 경계다. production 결정은 실제 key 분포, allocator, CPU cache, page/storage, concurrency, failure model에서 다시 검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
