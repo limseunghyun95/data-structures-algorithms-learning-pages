@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 29 · B-tree/B+tree와 page locality</title>
+</head>
+<body style="margin:0;background:#0f172a;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0f172a">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#1e3a8a;color:#eff6ff">
+          <div style="color:#bfdbfe;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 5 / DAY 29</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">높이를 node 수가 아니라<br>page I/O 수로 설계하라</h1>
+          <p style="margin:0;color:#dbeafe">B-tree · B+tree · fan-out · split proof · buffer pool · crash consistency · 180분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #2563eb;background:#dbeafe;border-radius:10px"><strong>한 줄 요약</strong><br>B/B+tree는 한 page에 많은 separator와 child pointer를 넣어 fan-out을 키우고 모든 leaf 깊이를 같게 유지함으로써, 거대한 ordered index의 search·range·update를 적은 page 접근으로 바꾸는 저장장치 친화적 자료구조다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Page / block</strong></td><td style="padding:7px;border:1px solid #bfdbfe">저장장치와 buffer manager가 한 번에 읽고 쓰는 고정 크기 단위. 흔히 4–16KiB지만 시스템마다 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>B-tree</strong></td><td style="padding:7px;border:1px solid #bfdbfe">한 node에 여러 key·child를 담고 모든 leaf 깊이를 같게 유지하는 multiway balanced search tree.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>B+tree</strong></td><td style="padding:7px;border:1px solid #bfdbfe">record/value는 leaf에만 두고 internal page는 separator와 child pointer 중심으로 구성하며 leaf를 순서대로 연결하는 변형.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Internal / leaf page</strong></td><td style="padding:7px;border:1px solid #bfdbfe">internal은 탐색 방향을 정하고, leaf는 실제 index entry 또는 record pointer를 저장한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Separator key</strong></td><td style="padding:7px;border:1px solid #bfdbfe">인접 child key 범위를 나누는 경계값. 예: 오른쪽 child의 최소 key를 복사한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Fan-out</strong></td><td style="padding:7px;border:1px solid #bfdbfe">internal page 하나가 가리킬 수 있는 child 수. 클수록 같은 N에서 높이가 낮다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Occupancy / fill factor</strong></td><td style="padding:7px;border:1px solid #bfdbfe">page 용량 중 사용 중인 비율. 너무 낮으면 공간·cache 낭비, 너무 높으면 split이 잦다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Split</strong></td><td style="padding:7px;border:1px solid #bfdbfe">가득 찬 page를 두 page로 나누고 parent에 새 separator·pointer를 반영하는 구조 변경.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Redistribution / merge</strong></td><td style="padding:7px;border:1px solid #bfdbfe">삭제 뒤 이웃에서 entry를 빌리거나 두 page를 합쳐 최소 occupancy를 회복하는 연산.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Buffer pool</strong></td><td style="padding:7px;border:1px solid #bfdbfe">disk page를 RAM frame에 cache하고 pin·evict·dirty flush를 관리하는 계층.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Slot directory</strong></td><td style="padding:7px;border:1px solid #bfdbfe">가변 길이 cell의 실제 byte offset을 정렬된 작은 배열로 보관하는 page 내부 색인.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>WAL</strong></td><td style="padding:7px;border:1px solid #bfdbfe">Write-Ahead Log. dirty page보다 복구 로그를 먼저 durable하게 써 crash 후 redo/undo할 수 있게 한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Latch / lock</strong></td><td style="padding:7px;border:1px solid #bfdbfe">latch는 짧은 in-memory 구조 보호, transaction lock은 논리 record 격리를 위한 장기 동기화라는 구분.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Read/write amplification</strong></td><td style="padding:7px;border:1px solid #bfdbfe">논리 연산 1회를 처리하려고 실제로 읽거나 쓰는 byte/page가 몇 배인지 나타내는 비용.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">2. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> RAM보다 큰 ordered index에서 <code>get</code>, <code>put</code>, <code>remove</code>, <code>range(lo,hi)</code>를 제공한다. 비교 30회보다 random page read 30회가 훨씬 비싸므로 cost model의 기본 연산을 “node 비교”에서 “page 접근”으로 바꾼다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#dbeafe"><th align="left" style="padding:7px;border:1px solid #bfdbfe">제약 질문</th><th align="left" style="padding:7px;border:1px solid #bfdbfe">설계에 미치는 영향</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">page 크기·key/value 평균/최대 길이?</td><td style="padding:7px;border:1px solid #bfdbfe">fan-out, overflow page, prefix compression, split policy</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">point:range:write 비율과 key 분포?</td><td style="padding:7px;border:1px solid #bfdbfe">B+ leaf link, fill factor, hot page contention, bulk load</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">index가 covering인가 secondary인가?</td><td style="padding:7px;border:1px solid #bfdbfe">leaf payload 크기, base-table random fetch, write amplification</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">동시 writer와 crash 보장?</td><td style="padding:7px;border:1px solid #bfdbfe">latch protocol, WAL ordering, split visibility, page reuse</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">memory budget·cache hit rate·storage latency?</td><td style="padding:7px;border:1px solid #bfdbfe">root/internal pinning, prefetch, page size, B-tree vs LSM</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">3. Architecture 그림: 한 번의 point lookup</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:28%;padding:12px;background:#2563eb;color:white;border-radius:8px"><strong>① Index API</strong></td><td style="padding:12px;background:#eff6ff"><code>get(42)</code> → comparator·snapshot·transaction context</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ root page-id</td></tr>
+            <tr><td style="padding:12px;background:#2563eb;color:white;border-radius:8px"><strong>② Buffer pool</strong></td><td style="padding:12px;background:#eff6ff">page table hit? frame pin : storage read → checksum 검증</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ internal separator search, child page-id</td></tr>
+            <tr><td style="padding:12px;background:#2563eb;color:white;border-radius:8px"><strong>③ B+tree descent</strong></td><td style="padding:12px;background:#eff6ff">root → internal → leaf; 각 level 최대 한 page</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ leaf entry: value 또는 row-id</td></tr>
+            <tr><td style="padding:12px;background:#1e3a8a;color:white;border-radius:8px"><strong>④ Result</strong></td><td style="padding:12px;background:#eff6ff">covering이면 즉시 반환, secondary면 base table page 추가 fetch</td></tr>
+          </table>
+          <p><strong>Range flow:</strong> 시작 key까지 root→leaf로 한 번 내려간 뒤 leaf의 next link를 따라 연속 page를 scan한다. 매 결과마다 root부터 다시 찾는 구현은 B+tree의 핵심 locality를 버린다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">4. B-tree와 B+tree의 차이</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">관점</th><th style="padding:7px;border:1px solid #bfdbfe">B-tree</th><th style="padding:7px;border:1px solid #bfdbfe">B+tree</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">record 위치</td><td style="padding:7px;border:1px solid #bfdbfe">internal과 leaf 모두 가능</td><td style="padding:7px;border:1px solid #bfdbfe">record/value는 leaf에만</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">internal key</td><td style="padding:7px;border:1px solid #bfdbfe">실제 record일 수 있음</td><td style="padding:7px;border:1px solid #bfdbfe">routing용 separator 복사본</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">fan-out</td><td style="padding:7px;border:1px solid #bfdbfe">payload 때문에 작아질 수 있음</td><td style="padding:7px;border:1px solid #bfdbfe">internal이 compact해 더 커지기 쉬움</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">range scan</td><td style="padding:7px;border:1px solid #bfdbfe">tree traversal 필요</td><td style="padding:7px;border:1px solid #bfdbfe">linked leaves 순차 scan</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">point lookup 종료</td><td style="padding:7px;border:1px solid #bfdbfe">internal에서 일찍 끝날 수 있음</td><td style="padding:7px;border:1px solid #bfdbfe">항상 leaf까지 내려감</td></tr>
+          </table>
+          <p>교과서 이름보다 구현 계약을 확인한다. 실제 DB 엔진은 “btree”라고 부르면서 leaf 중심·sibling link·dedup·MVCC tuple 등 B+tree 성격과 엔진 고유 정책을 결합한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">5. Ordered Index ADT</h2>
+          <ul style="padding-left:22px">
+            <li><code>get(key,snapshot)</code>: visible한 value/row-id 또는 NOT_FOUND.</li>
+            <li><code>put(key,value)</code>: duplicate replace/reject/multi-entry와 durability 지점을 정의한다.</li>
+            <li><code>remove(key)</code>: physical 즉시 삭제인지 tombstone/version cleanup인지 구분한다.</li>
+            <li><code>scan([lo,hi),direction,limit)</code>: 정렬 순서, snapshot, continuation token, cancel을 계약한다.</li>
+            <li><code>bulkLoad(sortedInput)</code>: online put 반복과 다른 fill factor·WAL·atomic publish 정책을 가진다.</li>
+          </ul>
+          <p><strong>중요:</strong> 자료구조 ADT의 “key 한 개”와 DB index의 duplicate key, MVCC version, row-id tie-break는 다르다. 물리 key를 <code>(indexedColumns,rowId)</code>처럼 total order로 만드는 이유다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">6. Representation invariant</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Page shape:</strong> internal page의 child 수는 separator 수+1이고, leaf entry와 slot은 1:1이다.</li>
+            <li><strong>Local order:</strong> 각 page의 logical key/slot 순서는 comparator 기준 엄격히 증가한다.</li>
+            <li><strong>Global range:</strong> separator <code>s[i]</code> 기준 child i의 key는 왼쪽 범위, child i+1은 오른쪽 범위에 속한다. 경계 포함 규칙은 일관돼야 한다.</li>
+            <li><strong>Balance:</strong> root를 제외한 모든 leaf는 같은 depth이며, non-root page는 정한 최소·최대 occupancy를 만족한다.</li>
+            <li><strong>B+ payload:</strong> 논리 record는 정확히 한 leaf에 있고 internal separator는 routing 복사본일 뿐이다.</li>
+            <li><strong>Leaf chain:</strong> next/prev가 key 순서를 보존하고 tree traversal의 leaf 순서와 정확히 일치한다.</li>
+            <li><strong>Reachability:</strong> root에서 모든 live page가 정확히 한 번 도달하며 freed/reused page를 가리키지 않는다.</li>
+            <li><strong>Physical page:</strong> header·slot·free-space·cell 영역이 겹치지 않고 checksum/LSN/page-id가 기대값과 일치한다.</li>
+          </ol>
+          <p>논리 RI와 물리 RI를 분리해서 검사한다. key 순서가 맞아도 slot offset이 page 밖을 가리키면 corruption이고, page layout이 맞아도 stale separator면 잘못된 child로 간다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">7. Page 내부 layout</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:4px;text-align:center;font-size:12px">
+            <tr><td style="padding:14px;background:#1e3a8a;color:white"><strong>Header</strong><br>type·count·free·LSN</td><td style="padding:14px;background:#2563eb;color:white"><strong>Slot array →</strong><br>key order의 offsets</td><td style="padding:14px;background:#dbeafe"><strong>Free space</strong><br>서로 향해 성장</td><td style="padding:14px;background:#93c5fd"><strong>← Cells</strong><br>varlen key/value</td></tr>
+          </table>
+          <p>가변 길이 cell 자체를 매 insert마다 밀지 않고 작은 slot offset만 정렬한다. delete로 freeblock·fragment가 생기면 page compaction을 할 수 있다. 큰 payload가 overflow page로 나가면 fan-out은 지키지만 추가 I/O와 corruption surface가 늘어난다.</p>
+          <p><strong>Fan-out 근사:</strong> usable page가 P bytes, header H, 평균 separator+child entry가 E bytes면 internal fan-out은 대략 <code>1+floor((P−H)/E)</code>다. 실제값은 slot, prefix compression, variable key, alignment, reserve space와 fill factor를 포함해 측정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">8. 시간·공간·I/O complexity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">연산</th><th style="padding:7px;border:1px solid #bfdbfe">Page I/O</th><th style="padding:7px;border:1px solid #bfdbfe">CPU / 추가 비용</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">point search</td><td style="padding:7px;border:1px solid #bfdbfe">O(log<sub>F</sub> N)</td><td style="padding:7px;border:1px solid #bfdbfe">각 page 안 O(log F) 비교 또는 SIMD/linear search</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">range k개</td><td style="padding:7px;border:1px solid #bfdbfe">O(log<sub>F</sub> N + leafPages(k))</td><td style="padding:7px;border:1px solid #bfdbfe">decode·predicate·base-row fetch는 별도</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">insert/delete</td><td style="padding:7px;border:1px solid #bfdbfe">O(log<sub>F</sub> N), split/merge cascade worst O(height)</td><td style="padding:7px;border:1px solid #bfdbfe">latch·WAL·dirty pages·version cleanup</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">bulk load sorted</td><td style="padding:7px;border:1px solid #bfdbfe">O(number of output pages)</td><td style="padding:7px;border:1px solid #bfdbfe">sort가 필요하면 O(N log N), sequential write</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">space</td><td style="padding:7px;border:1px solid #bfdbfe">O(N / occupancy)</td><td style="padding:7px;border:1px solid #bfdbfe">free space·separator 복사·MVCC·WAL·rebuild peak</td></tr>
+          </table>
+          <p>고정 order에서 연속 insert 전체의 structural split 수는 page가 충분히 차야 다음 split이 가능하므로 상각하면 insert당 O(1)개 수준이지만, root→leaf 탐색과 WAL/page write는 여전히 사라지지 않는다. “split 상각 O(1)”을 “insert I/O O(1)”로 바꾸면 틀리다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">9. 숫자로 보는 fan-out</h2>
+          <p>4KiB page에서 header·slot·여유를 제외하고 internal entry가 평균 16B라면 fan-out은 대략 200대가 될 수 있다. leaf가 평균 100 entry를 담고 fan-out F=200이라 가정하면 10억 entry에 필요한 leaf 약 1천만 page를 root 포함 약 5 level로 도달한다. pointer BST는 균형이어도 약 log₂(10억)≈30 node level이다.</p>
+          <p>이는 설명용 근사다. root·상위 internal은 buffer pool에 거의 항상 남을 수 있어 실제 storage read는 더 적고, 반대로 긴 composite key·낮은 fill·overflow·cache miss는 더 늘린다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">10. Leaf split 알고리즘과 정당성</h2>
+          <pre style="white-space:pre-wrap;padding:14px;background:#0f172a;color:#e2e8f0;border-radius:10px;font-size:12px">insertIntoFullLeaf(L, key, value):
+  T = stableSortedMerge(L.entries, (key,value))
+  R = allocatePage()
+  L.entries = T[0:mid]
+  R.entries = T[mid:]
+  R.next = L.next; L.next = R
+  separator = R.entries[0].key
+  insertIntoParent(L, separator, R)</pre>
+          <ul style="padding-left:22px">
+            <li><strong>Order:</strong> T가 정렬됐고 두 연속 slice로 나누므로 각 leaf의 local order와 <code>max(L)&lt;=min(R)</code>가 성립한다.</li>
+            <li><strong>Coverage:</strong> slice가 T를 중복 없이 분할해 기존 entry와 새 entry가 정확히 한 leaf에 남는다.</li>
+            <li><strong>Occupancy:</strong> mid를 최소 occupancy 범위 안에서 고르면 L/R 모두 하한과 상한을 만족한다.</li>
+            <li><strong>Routing:</strong> parent에 <code>min(R)</code> separator와 R pointer를 넣으면 이전 L 범위가 L/R 두 범위로 정확히 분할된다.</li>
+            <li><strong>Balance:</strong> 같은 level에서 sibling 하나가 생긴다. parent split도 같은 논리를 재귀 적용하며 root split 때 새 root를 만들면 모든 leaf depth가 함께 1 증가한다.</li>
+          </ul>
+          <p>DB 구현에서는 이 논리적 증명에 WAL record·latch visibility·page LSN·free-page allocation 순서가 추가돼야 한다. 메모리 RI를 지키는 코드가 곧 crash-safe 코드는 아니다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">11. 최소 반례</h2>
+          <div style="padding:16px;background:#eff6ff;border-radius:10px;margin-bottom:10px"><strong>B+tree인데 separator를 leaf에서 제거</strong><br>leaf <code>[10,20,30,40]</code>를 <code>[10,20]</code>, <code>[30,40]</code>으로 나누며 30을 parent로 “이동”해 leaf에서 지우면 key 30의 실제 record가 사라진다. B+tree separator는 복사다.</div>
+          <div style="padding:16px;background:#eff6ff;border-radius:10px;margin-bottom:10px"><strong>leaf link 갱신 순서 누락</strong><br>L→Old였는데 R.next=Old 없이 L.next=R만 쓰면 R 뒤 range가 끊긴다. prev까지 있으면 네 pointer의 원자적/복구 가능한 protocol이 필요하다.</div>
+          <div style="padding:16px;background:#eff6ff;border-radius:10px"><strong>delete 후 stale separator</strong><br>오른쪽 child의 최소 key가 30→40으로 바뀌었는데 parent가 30을 유지할 때 routing 규칙에 따라 lookup이 잘못된 child로 갈 수 있다. separator 정의와 갱신 조건을 하나로 고정한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">12. 직접 구현·테스트·benchmark</h2>
+          <p>Python으로 unique integer B+tree를 직접 구현했다. leaf/internal split, root 성장, <code>get</code>, leaf-link <code>range</code>를 만들고 다음 RI를 재귀 검증했다: local/global order, children=separators+1, separator=min(right subtree), leaf 동일 depth, 모든 entry 보존, leaf next chain 일치.</p>
+          <p>120,000개 key를 deterministic shuffle로 insert하고 200,000 hit lookup, 100-key range oracle, duplicate rejection을 실행했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">max children(order)</th><th style="padding:7px;border:1px solid #bfdbfe">높이 / page 수</th><th style="padding:7px;border:1px solid #bfdbfe">build</th><th style="padding:7px;border:1px solid #bfdbfe">200k lookup / 평균 page</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">8</td><td style="padding:7px;border:1px solid #bfdbfe">7 / 28,603</td><td style="padding:7px;border:1px solid #bfdbfe">221.561 ms</td><td style="padding:7px;border:1px solid #bfdbfe">187.726 ms / 7.000</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">64</td><td style="padding:7px;border:1px solid #bfdbfe">3 / 2,809</td><td style="padding:7px;border:1px solid #bfdbfe">92.327 ms</td><td style="padding:7px;border:1px solid #bfdbfe">114.571 ms / 3.000</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">256</td><td style="padding:7px;border:1px solid #bfdbfe">3 / 647</td><td style="padding:7px;border:1px solid #bfdbfe">86.984 ms</td><td style="padding:7px;border:1px solid #bfdbfe">117.940 ms / 3.000</td></tr>
+          </table>
+          <p><strong>해석:</strong> fan-out 8→64에서 평균 page 방문이 7→3으로 줄었다. order 256은 page 수가 더 적지만 lookup 시간이 64보다 아주 조금 느려 “fan-out 최대화=CPU도 항상 최적”이 아님을 보여준다.</p>
+          <p><strong>한계:</strong> CPython 3.9.1 object simulation이며 실제 4KiB serialization, buffer hit, storage latency, WAL, latch가 없다. <code>bisect</code>는 C 구현이다. 따라서 시간 수치를 DB 제품 비교로 일반화하지 말고 높이·RI·실험 방법을 학습 증거로 쓴다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">13. Production benchmark 설계</h2>
+          <ol style="padding-left:22px">
+            <li>key/value 길이 분포, duplicate, monotonic/random/hotspot insert를 production trace에서 재현한다.</li>
+            <li>cold cache와 warm cache를 분리하고 root/internal/leaf별 hit ratio와 physical read를 기록한다.</li>
+            <li>point hit/miss, short/long range, update/delete churn, bulk load를 각각 측정한다.</li>
+            <li>throughput만 보지 말고 p50/p95/p99, pages/op, split/sec, dirty eviction, WAL bytes/op, bytes/entry, cache hit을 본다.</li>
+            <li>steady-state 전까지 충분히 채우고 checkpoint·compaction·vacuum·rebuild가 겹친 tail을 포함한다.</li>
+            <li>crash injection을 WAL flush 전/후, new page write, parent install, page reuse 지점에 넣고 recovery 후 full validator를 돌린다.</li>
+          </ol>
+          <p><strong>주의:</strong> OS page cache와 DB buffer pool의 이중 cache, fsync 생략, 압축 여부, prefetch, queue depth가 다르면 결과를 비교할 수 없다. 평균 key만으로 fan-out을 계산하면 긴 tail key의 overflow와 split을 놓친다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">14. Split·delete·fragmentation의 실무 비용</h2>
+          <ul style="padding-left:22px">
+            <li><strong>Right-edge hotspot:</strong> 증가 key insert는 오른쪽 leaf와 parent에 집중된다. 순차 locality는 좋지만 latch contention·split burst가 생길 수 있다.</li>
+            <li><strong>Random insert:</strong> page 전반에 dirty write와 split을 퍼뜨려 cache·storage write locality가 나빠질 수 있다.</li>
+            <li><strong>Low fill factor:</strong> 미래 insert 여유와 split 감소를 사지만 index size·cache miss·scan I/O가 늘어난다.</li>
+            <li><strong>Delete:</strong> 즉시 merge는 oscillation과 write를 만들 수 있다. DB는 MVCC dead tuple cleanup, redistribution, background maintenance를 결합한다.</li>
+            <li><strong>Long key/include column:</strong> covering read는 줄여도 fan-out 저하, overflow, cache pressure, 모든 update의 index write를 키운다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">15. Concurrency: latch crabbing</h2>
+          <ol style="padding-left:22px">
+            <li>parent를 latch한 상태에서 child를 pin+latch한다.</li>
+            <li>child가 현재 연산에 “safe”하면 parent latch를 놓는다. insert safe는 split될 만큼 full하지 않다는 뜻이다.</li>
+            <li>unsafe path는 필요한 ancestor를 더 오래 잡거나 optimistic read 후 restart한다.</li>
+            <li>모든 thread가 root→leaf 같은 방향의 latch order를 지켜 deadlock을 줄인다.</li>
+            <li>range scan의 sibling 이동과 concurrent split은 high-key/right-link, version check 또는 restart protocol로 누락·중복을 막는다.</li>
+          </ol>
+          <p>latch는 page bytes의 순간적 일관성을 지키고 transaction lock/MVCC는 사용자가 보는 논리적 isolation을 지킨다. 둘을 하나라고 설명하면 면접에서 바로 꼬리 질문이 온다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">16. Crash consistency와 error handling</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th align="left" style="padding:7px;border:1px solid #bfdbfe">실패/경계</th><th align="left" style="padding:7px;border:1px solid #bfdbfe">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #bfdbfe">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">new page allocation 실패</td><td style="padding:7px;border:1px solid #bfdbfe">기존 leaf 수정 전 reserve, typed error</td><td style="padding:7px;border:1px solid #bfdbfe">절반 이동 후 OOM 반환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">split 중 crash</td><td style="padding:7px;border:1px solid #bfdbfe">WAL-before-data, idempotent redo, page LSN</td><td style="padding:7px;border:1px solid #bfdbfe">child·parent overwrite 순서에 운 맡김</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">torn/corrupt page</td><td style="padding:7px;border:1px solid #bfdbfe">checksum·page-id·bounds 검증, replica/backup 복구</td><td style="padding:7px;border:1px solid #bfdbfe">slot offset를 신뢰해 out-of-bounds</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">comparator/collation 변경</td><td style="padding:7px;border:1px solid #bfdbfe">version 확인 후 rebuild/reindex</td><td style="padding:7px;border:1px solid #bfdbfe">기존 byte order에 새 비교 적용</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">oversized key/value</td><td style="padding:7px;border:1px solid #bfdbfe">명시적 limit·overflow policy·quota</td><td style="padding:7px;border:1px solid #bfdbfe">무제한 overflow chain</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">stale page-id reuse</td><td style="padding:7px;border:1px solid #bfdbfe">epoch/generation, safe reclamation, WAL</td><td style="padding:7px;border:1px solid #bfdbfe">reader 존재 중 즉시 freelist 재사용</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">17. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li>page size·key distribution·SLO에서 fan-out과 예상 height를 계산한 뒤 실제 bytes/entry로 검증한다.</li>
+            <li>검증된 storage engine을 우선하고 custom tree보다 comparator·schema·index 선택을 먼저 최적화한다.</li>
+            <li>point/range와 covering/base fetch를 분리 측정해 index가 줄이는 I/O와 새 write 비용을 함께 본다.</li>
+            <li>논리 RI, page bounds/checksum, cross-page link, root reachability validator를 offline/online 수준별로 둔다.</li>
+            <li>bulk load는 sorted input과 목표 fill factor로 만들고 atomic publish·rollback·peak disk를 계획한다.</li>
+            <li>split, page occupancy histogram, leaf fragmentation, cache hit, WAL bytes, p99 latch wait를 관측한다.</li>
+            <li>backup restore와 crash recovery를 정기적으로 실제 실행한다. index rebuild 가능성과 base data 진실 원본을 구분한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">18. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q1. DB index가 Red-Black tree보다 B+tree를 쓰는 이유는?</strong><br>cost model을 page I/O로 선언한다. page-sized multiway node가 fan-out을 키워 height/I/O를 줄이고, internal payload를 줄인 B+tree는 fan-out과 linked-leaf range locality가 좋다. buffer pool·covering/heap fetch·split write 비용까지 말한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q2. B+tree leaf split의 정당성과 crash 위험을 설명하세요.</strong><br>sorted merge→연속 partition으로 order·coverage·occupancy를 보이고 min(right)를 parent에 복사해 routing을 복구한다. root split만 높이를 늘려 balance를 유지한다. production에서는 WAL-before-data, page LSN, latch visibility, recovery idempotence가 추가된다.</div>
+          <div style="padding:16px;background:#dbeafe;border-radius:10px"><strong>Q3. page 크기와 fill factor를 크게 하면 항상 좋은가요?</strong><br>큰 page/fill은 fan-out·scan density를 높이지만 read/write granularity, cache pollution, split cost, contention과 tail을 키울 수 있다. key 분포·storage·point/range/write mix에서 p99, pages/op, split, WAL, bytes/entry로 결정한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">19. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>B+tree internal separator와 leaf record가 같은 key를 가질 수 있는 이유는?</li>
+            <li>fan-out 200과 2가 같은 N에서 height를 얼마나 바꾸는지 cost model로 설명하라.</li>
+            <li>range O(log<sub>F</sub>N+leafPages(k))에서 k가 아니라 leafPages(k)를 쓰는 이유는?</li>
+            <li>split 수 상각 O(1)이 insert I/O O(1)을 의미하지 않는 이유는?</li>
+            <li>slot directory가 가변 길이 record 이동 비용을 어떻게 줄이는가?</li>
+            <li>covering index가 read는 줄이지만 write·cache 비용을 늘리는 경로는?</li>
+            <li>latch와 transaction lock의 책임 차이는?</li>
+            <li>Day 28 sorted array locality와 오늘 leaf page scan의 공통점은?</li>
+            <li>stale separator·broken leaf link를 각각 어떤 validator가 잡는가?</li>
+            <li>random write가 훨씬 많은 workload에서 다음 Day의 LSM tree를 검토할 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 30 · LSM tree, memtable, SSTable</strong><br>random update를 memory의 정렬 구조와 sequential immutable file로 바꾸는 write path, WAL·flush·multi-level lookup, tombstone과 compaction debt를 B+tree와 비교한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://www.postgresql.org/docs/current/btree.html" style="color:#1d4ed8">PostgreSQL 18 B-Tree Indexes</a> — multi-level page 구조, linked level, page split, deletion·dedup과 MVCC version churn.</li>
+            <li><a href="https://www.sqlite.org/fileformat.html#b_tree_pages" style="color:#1d4ed8">SQLite Database File Format: B-tree Pages</a> — interior/leaf RI, page header·slot array·freeblock·overflow의 실제 형식.</li>
+            <li><a href="https://15445.courses.cs.cmu.edu/spring2024/notes/08-trees.pdf" style="color:#1d4ed8">CMU 15-445/645 Lecture 08: Tree Indexes</a> — B+tree node, insert/split/delete와 latch crabbing.</li>
+            <li><a href="https://doc.rust-lang.org/std/collections/struct.BTreeMap.html" style="color:#1d4ed8">Rust Standard Library <code>BTreeMap</code></a> — cache efficiency와 node search work의 in-memory B-tree trade-off.</li>
+            <li><a href="https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html#force(boolean)" style="color:#1d4ed8">Java SE 26 <code>FileChannel.force</code></a> — modified file content/metadata의 durable storage 요청과 보장 경계.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:12px">구현·수치는 교육용 단일 환경이다. 실제 storage engine 선택은 page format, compression, buffer policy, WAL, concurrency, crash model과 production workload에서 재검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
