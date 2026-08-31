@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 30 · LSM tree, memtable, SSTable</title>
+</head>
+<body style="margin:0;background:#111827;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#7c2d12;color:#fff7ed">
+          <div style="color:#fed7aa;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 5 / DAY 30</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">Random update를 받아<br>sequential immutable file로 갚는다</h1>
+          <p style="margin:0;color:#ffedd5">WAL → Memtable → Immutable → SSTable → Version → Compaction · 185분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #ea580c;background:#ffedd5;border-radius:10px"><strong>한 줄 요약</strong><br>LSM tree는 최신 mutation을 WAL과 memory의 ordered memtable에 먼저 기록하고 이를 immutable sorted SSTable로 순차 flush한 뒤, 여러 세대의 최신값·tombstone을 merge/compaction으로 정리해 write locality를 얻는 대신 read·space·background I/O debt를 관리하는 구조다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>LSM tree</strong></td><td style="padding:7px;border:1px solid #fed7aa">Log-Structured Merge-Tree. memory와 storage의 여러 sorted run을 하나의 최신 key-value view처럼 제공하는 구조.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Mutation</strong></td><td style="padding:7px;border:1px solid #fed7aa">put·delete처럼 상태를 바꾸는 연산. delete도 “없애기”가 아니라 tombstone을 쓰는 mutation이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>WAL</strong></td><td style="padding:7px;border:1px solid #fed7aa">Write-Ahead Log. 아직 SSTable에 없는 mutation을 crash 후 재생하기 위한 append-only 복구 로그.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Memtable</strong></td><td style="padding:7px;border:1px solid #fed7aa">최근 mutation을 가진 in-memory structure. range를 지원하려면 보통 skip list 같은 ordered 표현을 쓴다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Immutable memtable</strong></td><td style="padding:7px;border:1px solid #fed7aa">용량에 도달해 write를 받지 않고 background flush를 기다리는 고정된 memtable.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>SSTable / sorted run</strong></td><td style="padding:7px;border:1px solid #fed7aa">key 순서로 정렬된 immutable storage file. data block·index·filter·footer/checksum metadata를 가질 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Sequence number</strong></td><td style="padding:7px;border:1px solid #fed7aa">mutation의 논리 순서를 식별하는 단조 증가 번호. 같은 key의 어느 version이 최신인지 결정한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Tombstone</strong></td><td style="padding:7px;border:1px solid #fed7aa">“이 key는 삭제됐다”는 versioned marker. 오래된 SSTable의 값을 다시 보이게 하지 않도록 유지한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Flush</strong></td><td style="padding:7px;border:1px solid #fed7aa">immutable memtable을 sorted SSTable로 기록하고 serving version에 원자적으로 추가하는 과정.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Level 0 / level</strong></td><td style="padding:7px;border:1px solid #fed7aa">flush output이 먼저 들어가는 L0와 그 아래 크기가 커지는 저장 계층. L0 file은 key range가 겹칠 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Compaction</strong></td><td style="padding:7px;border:1px solid #fed7aa">여러 sorted run을 merge해 최신 version만 남기고 level/files를 재조직하는 background 작업.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Manifest / Version</strong></td><td style="padding:7px;border:1px solid #fed7aa">현재 serving state를 구성하는 SST file, level, key range를 기록한 metadata와 immutable view.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Write stall</strong></td><td style="padding:7px;border:1px solid #fed7aa">flush/compaction이 ingest를 못 따라가 memtable·L0가 한계를 넘을 때 write를 늦추거나 멈추는 backpressure.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Amplification</strong></td><td style="padding:7px;border:1px solid #fed7aa">논리 1byte/1query를 위해 storage가 실제로 쓰고·읽고·점유하는 배수.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Snapshot</strong></td><td style="padding:7px;border:1px solid #fed7aa">특정 sequence 이하의 consistent view. 오래된 version·tombstone·file 수명을 연장할 수 있다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">2. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> write가 많고 dataset은 RAM보다 큰 ordered KV store에 <code>put/get/delete/range</code>, crash recovery, snapshot을 제공한다. 매 write마다 큰 B+tree page를 random update하는 대신 mutation은 작은 WAL append와 memory update로 받고, 정렬된 큰 batch를 storage에 sequential하게 쓴다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#ffedd5"><th align="left" style="padding:7px;border:1px solid #fed7aa">제약 질문</th><th align="left" style="padding:7px;border:1px solid #fed7aa">결정되는 것</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">ack는 process/OS/power loss 중 어디까지 durable?</td><td style="padding:7px;border:1px solid #fed7aa">WAL sync, group commit, disable-WAL 허용 범위</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">point:range:write와 overwrite/delete 비율?</td><td style="padding:7px;border:1px solid #fed7aa">memtable, Bloom/filter, compaction, tombstone 정책</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">sustained ingest와 storage bandwidth?</td><td style="padding:7px;border:1px solid #fed7aa">memtable 수, flush threads, level size, stall threshold</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">read p99와 disk/memory budget?</td><td style="padding:7px;border:1px solid #fed7aa">run/file 수, cache, index/filter pinning, leveled/tiered</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">snapshot/replication/TTL이 얼마나 오래 유지?</td><td style="padding:7px;border:1px solid #fed7aa">version retention, tombstone GC safety, space debt</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">3. Architecture 그림: write path</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:29%;padding:12px;background:#ea580c;color:white;border-radius:8px"><strong>① Write batch</strong></td><td style="padding:12px;background:#fff7ed">validate → sequence 할당 → batch checksum</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ WAL append + required sync 후에만 durable ack</td></tr>
+            <tr><td style="padding:12px;background:#ea580c;color:white;border-radius:8px"><strong>② Mutable memtable</strong></td><td style="padding:12px;background:#fff7ed"><code>(userKey,sequence,type) → value</code>; 최신 read 즉시 반영</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ size/total-WAL/memory trigger</td></tr>
+            <tr><td style="padding:12px;background:#ea580c;color:white;border-radius:8px"><strong>③ Immutable queue</strong></td><td style="padding:12px;background:#fff7ed">active swap은 짧게, background가 sorted SST temp 생성</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ file complete·sync → manifest/version atomic install</td></tr>
+            <tr><td style="padding:12px;background:#7c2d12;color:white;border-radius:8px"><strong>④ L0 + compaction</strong></td><td style="padding:12px;background:#fff7ed">immutable SST serving → merge to lower level → safe old-file/WAL GC</td></tr>
+          </table>
+          <p>write latency가 짧아졌다고 물리 비용이 사라진 것은 아니다. foreground에서 뒤로 미룬 sort·merge·compression·checksum·write를 background가 처리하며, 그 처리율이 ingest보다 낮으면 debt와 stall이 누적된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">4. Architecture 그림: read path</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="padding:11px;background:#7c2d12;color:white;border-radius:8px"><strong>Newest</strong></td><td style="padding:11px;background:#ffedd5">mutable memtable → immutable memtables</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ 찾았어도 snapshot sequence와 type 확인</td></tr>
+            <tr><td style="padding:11px;background:#c2410c;color:white;border-radius:8px"><strong>L0</strong></td><td style="padding:11px;background:#ffedd5">range가 겹치는 여러 newest SST; filter → index → data block</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ 아직 visible version 없음</td></tr>
+            <tr><td style="padding:11px;background:#ea580c;color:white;border-radius:8px"><strong>L1…Ln</strong></td><td style="padding:11px;background:#ffedd5">leveled이면 level당 겹치는 file 최대 하나를 후보로 탐색</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ 최대 visible sequence의 value/tombstone 선택</td></tr>
+            <tr><td style="padding:11px;background:#9a3412;color:white;border-radius:8px"><strong>Result</strong></td><td style="padding:11px;background:#ffedd5">value 반환 / tombstone이면 NOT_FOUND / snapshot rule 적용</td></tr>
+          </table>
+          <p>구현은 반드시 현재 version을 pin한다. read 도중 compaction이 file set을 교체해도 iterator가 참조하는 old SST를 즉시 삭제하면 안 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">5. KV Store ADT와 durability 계약</h2>
+          <ul style="padding-left:22px">
+            <li><code>put(key,value,writeOptions)</code>: replace semantics, assigned sequence, ack의 durable 경계를 반환한다.</li>
+            <li><code>delete(key)</code>: 존재 여부와 무관하게 tombstone mutation을 만들 수 있으며 idempotency를 정의한다.</li>
+            <li><code>get(key,snapshot)</code>: snapshot 이하 가장 큰 sequence의 type/value를 해석한다.</li>
+            <li><code>scan([lo,hi),snapshot)</code>: 모든 component를 user-key order로 merge하고 같은 key는 최신 visible version 하나만 노출한다.</li>
+            <li><code>flush</code>와 <code>compact</code>: admin 요청의 completion·durability·cancel semantics를 분리한다.</li>
+          </ul>
+          <p><strong>ack 전제:</strong> sync write이면 WAL record가 검증 가능한 형식으로 durable해진 뒤 성공을 반환한다. async/no-WAL은 더 빠를 수 있지만 power/process crash에서 잃을 수 있는 범위를 API와 SLO에 명시한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">6. Representation invariant</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Global sequence:</strong> accepted mutation마다 유일하고 증가하는 sequence가 있으며 같은 key의 version order를 만든다.</li>
+            <li><strong>WAL-before-loss:</strong> 아직 durable SST에 없는 acknowledged mutation은 recovery 가능한 WAL에 존재한다.</li>
+            <li><strong>Memtable order:</strong> 각 entry는 internal key <code>(userKey,sequence desc,type)</code> 규칙으로 검색·순회 가능하다.</li>
+            <li><strong>SST immutability:</strong> 완료된 SST는 byte가 바뀌지 않고 entries는 정렬되며 block index·bounds·checksum/footer가 일치한다.</li>
+            <li><strong>Serving version:</strong> manifest/version은 완전히 생성된 file만 참조하고, 참조된 모든 live file은 존재한다.</li>
+            <li><strong>Newest-wins:</strong> snapshot 이하 후보 중 최대 sequence 하나가 논리 상태이며 tombstone이면 key는 보이지 않는다.</li>
+            <li><strong>Leveled ranges:</strong> L0는 overlap 가능, L1+는 같은 level 안에서 file key range가 겹치지 않는 정책을 유지한다.</li>
+            <li><strong>Lifetime:</strong> pinned snapshot/iterator/version이 참조하는 WAL/SST는 GC하지 않는다.</li>
+            <li><strong>Tombstone safety:</strong> 더 오래된 value가 존재할 수 있는 level/snapshot/replica가 모두 사라지기 전 tombstone을 제거하지 않는다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">7. SSTable은 무엇을 저장하나</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:4px;text-align:center;font-size:12px">
+            <tr><td style="padding:13px;background:#7c2d12;color:white"><strong>Data blocks</strong><br>sorted entries·restart</td><td style="padding:13px;background:#9a3412;color:white"><strong>Filter</strong><br>없음 후보 차단</td><td style="padding:13px;background:#c2410c;color:white"><strong>Index</strong><br>key→block handle</td><td style="padding:13px;background:#ea580c;color:white"><strong>Meta/Footer</strong><br>properties·checksum·magic</td></tr>
+          </table>
+          <p>point get은 file key range와 filter를 먼저 보고, 가능성이 있을 때만 index와 data block을 읽는다. filter는 false positive 때문에 불필요한 read가 생길 수 있지만 false negative가 없어야 한다. 상세 확률·bit budget은 Day 31에서 증명한다.</p>
+          <p>prefix/delta compression은 공간과 cache 효율을 높이지만 block 일부만 독립 decode하기 어렵게 한다. block size가 커지면 index·compression은 좋아져도 point read amplification과 cache pollution이 커질 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">8. Get 정당성: 왜 최신값을 반환하는가</h2>
+          <p>snapshot sequence를 S라 하자. 모든 component에서 user key k이며 sequence≤S인 entry 후보를 모아 sequence 최대 e를 고른다.</p>
+          <ul style="padding-left:22px">
+            <li><strong>Completeness:</strong> WAL/memtable에서 flush된 mutation은 manifest install 뒤 SST에 존재하고, install 전에는 immutable+WAL에 남는다. serving components를 모두 보면 acknowledged version을 놓치지 않는다.</li>
+            <li><strong>Order:</strong> sequence가 mutation의 total order이므로 최대 e보다 나중이면서 S 이하인 후보는 없다.</li>
+            <li><strong>Visibility:</strong> e가 value면 그 값, tombstone이면 삭제가 그 이전 모든 value를 가리므로 NOT_FOUND다.</li>
+            <li><strong>Early stop:</strong> newest→oldest 탐색은 “이 component의 모든 sequence가 뒤 component보다 큼”이 metadata로 보장될 때만 첫 hit에서 멈출 수 있다.</li>
+          </ul>
+          <p><strong>최소 반례:</strong> newest L0에 <code>delete(k,seq=9)</code>, L2에 <code>put(k,V,seq=4)</code>가 있다. tombstone을 “값이 아니니 계속 찾자”로 처리하면 삭제된 V가 부활한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">9. Flush transaction과 crash 지점</h2>
+          <ol style="padding-left:22px">
+            <li>mutable을 immutable로 swap하고 새 WAL+memtable이 write를 받는다.</li>
+            <li>immutable을 internal-key 순서로 읽어 temporary SST를 쓰며 block checksum·footer를 완성한다.</li>
+            <li>SST를 필요한 durability로 sync하고 최종 이름/identity를 확정한다.</li>
+            <li>manifest에 “new SST 추가” version edit를 append+sync하고 current version을 atomic install한다.</li>
+            <li>그 뒤에만 immutable과 그 mutation을 유일하게 보호하던 old WAL을 제거 대상으로 표시한다.</li>
+          </ol>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th align="left" style="padding:7px;border:1px solid #fed7aa">Crash 시점</th><th align="left" style="padding:7px;border:1px solid #fed7aa">Recovery의 안전한 결과</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">SST complete 전</td><td style="padding:7px;border:1px solid #fed7aa">manifest가 참조하지 않는 temp/stale file 제거, WAL replay</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">SST complete 후 manifest 전</td><td style="padding:7px;border:1px solid #fed7aa">orphan SST 무시/GC, WAL replay</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">manifest install 후 WAL delete 전</td><td style="padding:7px;border:1px solid #fed7aa">SST serving; replay 중 sequence/dedup으로 logical duplicate 방지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">WAL을 먼저 삭제</td><td style="padding:7px;border:1px solid #fed7aa">SST/manifest 실패 시 데이터 유실 — 금지 순서</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">10. 시간·공간·amortized complexity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">연산</th><th style="padding:7px;border:1px solid #fed7aa">논리 비용</th><th style="padding:7px;border:1px solid #fed7aa">숨은 physical 비용</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">put/delete</td><td style="padding:7px;border:1px solid #fed7aa">WAL append + memtable O(log M) 또는 expected O(1)</td><td style="padding:7px;border:1px solid #fed7aa">sync/group commit, 이후 flush·compaction bytes</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">point get</td><td style="padding:7px;border:1px solid #fed7aa">memtable + candidate runs/files</td><td style="padding:7px;border:1px solid #fed7aa">filter FP, index/data block read, cache/decode</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">range k개</td><td style="padding:7px;border:1px solid #fed7aa">R-way merge O((visited versions) log R)</td><td style="padding:7px;border:1px solid #fed7aa">obsolete versions·tombstones도 읽고 decode</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">flush</td><td style="padding:7px;border:1px solid #fed7aa">memtable entries O(M) 순회</td><td style="padding:7px;border:1px solid #fed7aa">sort가 필요하면 O(M log M), sequential write·sync</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">space</td><td style="padding:7px;border:1px solid #fed7aa">live data + obsolete versions</td><td style="padding:7px;border:1px solid #fed7aa">WAL, tombstone, compaction input+output peak, cache</td></tr>
+          </table>
+          <p>flush 비용은 한 memtable의 많은 writes에 나뉘어 상각되지만, compaction은 같은 logical byte를 여러 level에서 다시 쓸 수 있다. foreground put O(log M)을 storage write O(log M)로 오해하지 말고 <code>physical bytes written / user bytes</code>를 측정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">11. Compaction은 merge sort이자 부채 상환</h2>
+          <p>각 input run은 이미 정렬됐으므로 min-heap을 이용한 k-way merge로 다음 key를 고른다. 같은 user key의 version들은 sequence로 정렬해 snapshot에 필요한 것만 보존하고, 안전한 tombstone/obsolete version을 버린다.</p>
+          <ul style="padding-left:22px">
+            <li><strong>Leveled:</strong> level당 sorted run 수를 적게 해 read·space amplification을 낮추지만 기존 큰 run의 겹치는 범위를 재작성해 write amplification이 커질 수 있다.</li>
+            <li><strong>Tiered/universal:</strong> 비슷한 크기의 여러 run을 모아 merge해 write를 줄이지만 run 수·임시 공간·read amplification이 커질 수 있다.</li>
+            <li><strong>Correctness:</strong> input을 current version에서 제거하기 전에 모든 output을 complete+sync하고 새 version을 atomic install한다.</li>
+            <li><strong>Lifetime:</strong> old version을 pin한 reader가 끝나기 전 input SST를 삭제하지 않는다.</li>
+          </ul>
+          <p>구체적 level ratio, selection, write/read/space amplification 계산과 compaction 폭주는 Day 32에서 더 깊게 다룬다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">12. 직접 구현·테스트·benchmark</h2>
+          <p>Python으로 mutable dict memtable, immutable sorted run, sequence/tombstone, newest-first get, range k-way merge, bottommost full compaction을 구현했다. 60,000 random mutation(11개마다 delete)을 reference dict와 전체 30,000 key 및 [5000,5200) range에서 대조했고 compaction 전후 결과 불변을 검증했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th align="left" style="padding:7px;border:1px solid #fed7aa">실험</th><th align="left" style="padding:7px;border:1px solid #fed7aa">결과</th><th align="left" style="padding:7px;border:1px solid #fed7aa">의미</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">29 overlapping runs → 1 compacted run, 100k get</td><td style="padding:7px;border:1px solid #fed7aa">평균 probe 13.098→1.000, 517.125→60.999ms</td><td style="padding:7px;border:1px solid #fed7aa">빠른 ingest가 read debt를 만들고 compaction이 갚는다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">60k unique random ordered insert</td><td style="padding:7px;border:1px solid #fed7aa">sorted-list in-place 467.755ms</td><td style="padding:7px;border:1px solid #fed7aa">매 insert의 shift O(n)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">4k memtable batch + 15 sorted runs</td><td style="padding:7px;border:1px solid #fed7aa">25.075ms</td><td style="padding:7px;border:1px solid #fed7aa">batch sort/immutable output로 이동을 모은 학습 모델</td></tr>
+          </table>
+          <p><strong>주의:</strong> CPython 3.9.1 memory simulation이다. 실제 WAL/fsync, SST serialization, compression, file cache, Bloom, SSD bandwidth, compaction write가 없고 sorted-list는 B+tree가 아니다. 숫자를 제품 성능으로 일반화하지 말고 write batching·read amplification·최신값 RI의 인과만 사용한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">13. Backpressure: memory가 처리율을 만들지 않는다</h2>
+          <p>지속 ingest λ가 flush+compaction service μ보다 크면 immutable memtable과 L0 file이 계속 쌓인다. 큰 write buffer는 burst를 더 오래 흡수하지만 장기 처리율을 높이지 않고 recovery time·memory·read amplification을 키운다.</p>
+          <ol style="padding-left:22px">
+            <li>soft threshold에서 write delay를 점진적으로 걸어 producer가 feedback을 받게 한다.</li>
+            <li>hard threshold에서 명시적으로 stall/reject하고 무제한 memory/file 생성을 막는다.</li>
+            <li>foreground write QPS와 background bytes/sec를 같은 dashboard에서 본다.</li>
+            <li>tenant/column-family별 quota로 한 hot workload가 전체 flush/WAL retention을 막지 않게 한다.</li>
+          </ol>
+          <p><strong>필수 지표:</strong> active/immutable memtable bytes, oldest immutable age, L0 file·overlap, pending compaction bytes, stall duration/reason, WAL retention, write/read/space amplification, p99 get/put.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">14. B+tree와 LSM 비교</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">관점</th><th style="padding:7px;border:1px solid #fed7aa">B+tree</th><th style="padding:7px;border:1px solid #fed7aa">LSM</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">write locality</td><td style="padding:7px;border:1px solid #fed7aa">target page random update·split</td><td style="padding:7px;border:1px solid #fed7aa">WAL append + batch sequential SST</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">point read</td><td style="padding:7px;border:1px solid #fed7aa">한 root→leaf path</td><td style="padding:7px;border:1px solid #fed7aa">여러 component 후보; filter/cache 도움</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">range</td><td style="padding:7px;border:1px solid #fed7aa">linked leaves로 단순 scan</td><td style="padding:7px;border:1px solid #fed7aa">여러 run merge·dedup·tombstone</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">space</td><td style="padding:7px;border:1px solid #fed7aa">page free space·MVCC version</td><td style="padding:7px;border:1px solid #fed7aa">obsolete version·tombstone·compaction peak</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">tail source</td><td style="padding:7px;border:1px solid #fed7aa">split·latch·dirty flush</td><td style="padding:7px;border:1px solid #fed7aa">sync·flush·compaction·stall</td></tr>
+          </table>
+          <p>“write-heavy=LSM”만으로 결정하지 않는다. read/range SLO, key/value 크기, overwrite, compression, device endurance, cache, recovery, 운영 복잡도를 같은 workload에서 측정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">15. Snapshot·tombstone·replication 함정</h2>
+          <ul style="padding-left:22px">
+            <li>old snapshot S는 S 이하 version을 필요로 하므로 최신 compaction이 old value를 마음대로 지울 수 없다.</li>
+            <li>tombstone을 시간만 보고 지우면 아직 compaction되지 않은 lower-level value가 부활할 수 있다.</li>
+            <li>replica가 tombstone을 보기 전에 GC하면 늦은 replica의 old value가 다시 전파될 수 있다.</li>
+            <li>TTL은 wall clock semantics, snapshot, clock skew, compaction 시점을 정의해야 “만료 즉시 disk에서 사라짐” 같은 거짓 기대를 피한다.</li>
+            <li>긴 iterator/snapshot은 old SST refcount와 disk usage를 붙잡으므로 age·pin bytes를 관측하고 제한한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">16. Error handling과 failure atomicity</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th align="left" style="padding:7px;border:1px solid #fed7aa">실패</th><th align="left" style="padding:7px;border:1px solid #fed7aa">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #fed7aa">Anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">WAL append/sync 실패</td><td style="padding:7px;border:1px solid #fed7aa">batch 미적용 또는 failed state, 성공 ack 금지</td><td style="padding:7px;border:1px solid #fed7aa">memtable만 수정 후 성공</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">partial/torn WAL record</td><td style="padding:7px;border:1px solid #fed7aa">length·checksum·fragment framing으로 마지막 tail 거부</td><td style="padding:7px;border:1px solid #fed7aa">깨진 bytes를 mutation으로 해석</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">SST checksum 오류</td><td style="padding:7px;border:1px solid #fed7aa">corruption 반환, replica/backup 복구</td><td style="padding:7px;border:1px solid #fed7aa">NOT_FOUND로 숨김</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">disk full during compaction</td><td style="padding:7px;border:1px solid #fed7aa">input/version 유지, partial output 제거, reserve/alert</td><td style="padding:7px;border:1px solid #fed7aa">input 먼저 삭제</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">background error</td><td style="padding:7px;border:1px solid #fed7aa">write stop/read-only 전환, persistent alarm</td><td style="padding:7px;border:1px solid #fed7aa">log만 남기고 write 계속 ack</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">sequence overflow</td><td style="padding:7px;border:1px solid #fed7aa">checked limit·migration/epoch policy</td><td style="padding:7px;border:1px solid #fed7aa">wrap해 최신 순서 역전</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">17. Production benchmark 설계</h2>
+          <ol style="padding-left:22px">
+            <li>initial load와 steady overwrite/delete를 분리하고 실제 key/value·compressibility·skew를 재현한다.</li>
+            <li>write buffer가 가득 차기 전 짧은 burst 수치 대신 최소 여러 compaction cycle의 steady state를 측정한다.</li>
+            <li>sync/async WAL, group size, cache warm/cold, point hit/miss, short/long range를 각각 표시한다.</li>
+            <li>user ops/sec와 device bytes/sec를 함께 재 write amplification을 계산한다.</li>
+            <li>checkpoint/backup, snapshot, TTL, disk near-full, compaction thread loss, process kill을 주입한다.</li>
+            <li>평균뿐 아니라 p99/p999, stall time, recovery time, peak disk, old-version retention을 보고한다.</li>
+          </ol>
+          <p><strong>Benchmark anti-pattern:</strong> WAL 비활성 결과를 durable DB와 비교, cache warm get만 보고, compaction이 시작되기 전에 종료, 데이터가 RAM보다 작음, overwrite 없이 sequential unique key만 사용, output checksum을 소비하지 않음.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">18. 실무 Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li>durability·snapshot·delete semantics를 먼저 문서화하고 검증된 engine 기본값에서 출발한다.</li>
+            <li>WAL·memtable·SST·manifest 각각의 checksum, sequence bounds, file identity를 검증한다.</li>
+            <li>foreground ingest rate를 background sustainable bytes/sec보다 낮게 capacity plan한다.</li>
+            <li>memory budget에 active/immutable memtable, block cache, index/filter, iterator pin을 모두 포함한다.</li>
+            <li>filter와 cache는 read debt를 줄일 뿐 compaction debt를 제거하지 않음을 기억한다.</li>
+            <li>tombstone GC는 oldest snapshot, lower-level overlap, replica/backup 안전성을 모두 확인한다.</li>
+            <li>disk headroom을 compaction input+output peak와 WAL retention까지 두고 full 전에 throttle한다.</li>
+            <li>crash recovery와 backup restore 후 full key/version validator를 정기 실행한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">19. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q1. LSM write/read path와 durability를 설계해 보세요.</strong><br>sequence batch를 WAL append+필요 시 sync한 뒤 memtable에 적용한다. full이면 immutable로 swap, complete+sync SST를 manifest/version에 atomic install한 뒤 old WAL을 GC한다. read는 snapshot 이하 newest version을 memtable→SST에서 찾고 tombstone을 NOT_FOUND로 해석한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q2. LSM이 write에 유리한데 왜 write stall이 생기나요?</strong><br>random update를 WAL+memory로 빠르게 수용했지만 flush·compaction physical bytes는 background debt다. 지속 ingest가 service보다 크면 immutable/L0/read amp가 증가하므로 soft delay·hard stall·quota가 correctness와 bounded resource에 필요하다.</div>
+          <div style="padding:16px;background:#ffedd5;border-radius:10px"><strong>Q3. Tombstone은 언제 안전하게 제거할 수 있나요?</strong><br>그 tombstone보다 오래된 value가 어떤 lower level, snapshot, iterator, replica, backup에도 다시 관측되지 않을 때다. 단순 TTL 경과만으로 삭제하면 value resurrection이 가능하며 sequence·overlap·retention watermark가 필요하다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">20. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>WAL과 memtable이 같은 mutation을 둘 다 가지는 이유는?</li>
+            <li>immutable memtable 없이 active memtable을 직접 flush하면 어떤 race가 생기는가?</li>
+            <li>newest tombstone 뒤 old value 탐색을 계속하면 왜 correctness가 깨지는가?</li>
+            <li>L0 file은 왜 모두 겹칠 수 있고 L1+는 leveled에서 왜 하나만 후보인가?</li>
+            <li>flush 상각 비용과 compaction write amplification은 어떻게 다른가?</li>
+            <li>range scan에서 Bloom filter가 큰 도움이 되지 않는 이유를 예측하라.</li>
+            <li>긴 snapshot이 tombstone·SST·disk usage에 미치는 영향은?</li>
+            <li>큰 memtable이 write burst는 흡수하지만 장기 처리율을 만들지 못하는 이유는?</li>
+            <li>Day 29 B+tree split과 오늘 LSM compaction의 failure-atomic publish 공통점은?</li>
+            <li>실험의 29→1 run이 read를 개선하면서 어떤 write·space 비용을 냈는가?</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 31 · Bloom filter와 false positive</strong><br>bit array·k개 hash의 RI, false negative가 없어야 하는 이유, false-positive 확률과 최적 k를 유도하고 LSM point read의 불필요한 SST 접근을 어떻게 줄이는지 실측한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://db.cs.berkeley.edu/cs286/papers/lsm-acta1996.pdf" style="color:#c2410c">O'Neil et al., The Log-Structured Merge-Tree (1996)</a> — memory/disk component와 merge 기반 LSM 원 논문.</li>
+            <li><a href="https://github.com/google/leveldb/blob/main/doc/impl.md" style="color:#c2410c">Google LevelDB Implementation Notes</a> — log·memtable·sorted table·levels·manifest·recovery와 L0 overlap.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Overview" style="color:#c2410c">RocksDB Overview</a> — memtable, WAL, SST, flush와 multi-threaded compaction architecture.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-%28WAL%29" style="color:#c2410c">RocksDB Write-Ahead Log</a> — mutation의 memtable/WAL 이중 기록과 recovery lifecycle.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/MemTable" style="color:#c2410c">RocksDB MemTable</a> — mutable→immutable 전환, flush trigger, concurrent insert와 memory options.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Rocksdb-BlockBasedTable-Format" style="color:#c2410c">RocksDB BlockBasedTable Format</a> — SST data/index/filter/meta/footer 구조.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Compaction" style="color:#c2410c">RocksDB Compaction</a> — leveled·tiered의 write/read/space amplification trade-off.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/How-we-keep-track-of-live-SST-files" style="color:#c2410c">RocksDB Live SST Files</a> — immutable version과 reader가 참조하는 old file lifetime.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:12px">구현·수치는 교육용 단일 환경이다. production 선택은 WAL 보장, storage, compression, workload skew, cache, compaction policy, snapshot/replica retention과 failure model에서 재검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
