@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-08-31T09:01:10+09:00",
+  "updatedAt": "2026-09-01T09:01:15+09:00",
   "lessons": [
     {
       "day": 1,
@@ -275,6 +275,15 @@
       "path": "day-30.html",
       "kind": "lesson",
       "publishedAt": "2026-08-31T09:01:10+09:00"
+    },
+    {
+      "day": 31,
+      "week": 5,
+      "title": "Bloom filter와 false positive",
+      "summary": "Approximate Membership ADT와 bit invariant부터 FPR·최적 k 유도, no-false-negative 증명, LSM I/O 절감·cache·corruption·운영 trade-off까지 연결합니다.",
+      "path": "day-31.html",
+      "kind": "lesson",
+      "publishedAt": "2026-09-01T09:01:15+09:00"
     }
   ]
 }

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 31 · Bloom filter와 false positive</title>
+</head>
+<body style="margin:0;background:#111827;color:#293248;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111827">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#064e3b;color:#ecfdf5">
+          <div style="color:#a7f3d0;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 5 / DAY 31</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">“확실히 없음”으로<br>비싼 I/O를 건너뛴다</h1>
+          <p style="margin:0;color:#d1fae5">Bloom filter · false positive · bits/key · LSM read path · 190분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #059669;background:#d1fae5;border-radius:10px"><strong>한 줄 요약</strong><br>Bloom filter는 m-bit 배열과 k개 hash로 집합을 압축해 <strong>“확실히 없음” 또는 “있을 수도 있음”</strong>을 답하며, false positive는 허용하지만 같은 key 표현·hash·bit가 보존되는 한 false negative는 없어야 하는 read 최적화 장치다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Membership query</strong></td><td style="padding:7px;border:1px solid #a7f3d0">원소 x가 집합 S에 속하는지 묻는 질의.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Approximate membership</strong></td><td style="padding:7px;border:1px solid #a7f3d0">정확한 원소를 저장하지 않고 작은 확률의 오답을 허용해 공간을 줄이는 membership 질의.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Bloom filter</strong></td><td style="padding:7px;border:1px solid #a7f3d0">m개 bit와 k개 hash 위치로 집합을 요약하는 확률적 자료구조.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Bit array</strong></td><td style="padding:7px;border:1px solid #a7f3d0">각 칸이 0/1인 배열. 실제 구현은 보통 8개 bit를 한 byte에 packed한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>m, n, k</strong></td><td style="padding:7px;border:1px solid #a7f3d0">m은 총 bit 수, n은 넣은 서로 다른 원소 수, k는 원소당 확인할 hash 위치 수.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>False positive(FP)</strong></td><td style="padding:7px;border:1px solid #a7f3d0">실제로 없는데 “있을 수도 있음”이라고 답하는 것. 후속 정확 조회가 걸러낸다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>False negative(FN)</strong></td><td style="padding:7px;border:1px solid #a7f3d0">실제로 있는데 “확실히 없음”이라고 답하는 것. 표준 Bloom filter에서는 correctness 위반이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>False-positive rate(FPR)</strong></td><td style="padding:7px;border:1px solid #a7f3d0">실제로 없는 질의 중 filter가 positive를 반환한 비율.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Bit density q</strong></td><td style="padding:7px;border:1px solid #a7f3d0">전체 bit 중 1인 비율. 과도하게 높으면 saturation과 높은 FPR을 뜻한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>bits per key</strong></td><td style="padding:7px;border:1px solid #a7f3d0">m/n. 메모리 예산과 오차율을 연결하는 실무 설정값.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Double hashing</strong></td><td style="padding:7px;border:1px solid #a7f3d0">두 base hash h1,h2로 <code>(h1+i·h2) mod m</code>의 k개 위치를 만드는 기법.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Canonicalization</strong></td><td style="padding:7px;border:1px solid #a7f3d0">대소문자·Unicode·comparator 규칙을 반영해 같은 논리 key를 같은 bytes로 바꾸는 과정.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Saturation</strong></td><td style="padding:7px;border:1px solid #a7f3d0">capacity보다 너무 많은 원소를 넣어 대부분 bit가 1이 되고 filter가 거의 모든 질의에 positive를 내는 상태.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0"><strong>Fail-open</strong></td><td style="padding:7px;border:1px solid #a7f3d0">filter가 없거나 손상됐을 때 “없음”으로 단정하지 않고 원본 SST를 조회하는 안전한 fallback.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">2. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> 20개의 SSTable이 point get의 key-range 후보라고 하자. key가 실제로 없으면 정확한 index/data 조회만으로 최대 20번의 storage 접근이 발생한다. 각 SST의 key 집합을 작은 memory filter로 요약하면 대부분의 “없음”을 CPU·RAM만으로 판정할 수 있다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">먼저 묻는 제약</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">설계 결정</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">point miss가 많고 한 번의 후속 조회가 비싼가?</td><td style="padding:7px;border:1px solid #a7f3d0">Bloom 적용 가치와 목표 FPR</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">n의 상한과 memory budget은?</td><td style="padding:7px;border:1px solid #a7f3d0">m, bits/key, shard/partition 크기</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">key가 mutable하고 삭제되는가?</td><td style="padding:7px;border:1px solid #a7f3d0">immutable SST마다 rebuild 또는 counting filter 선택</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">whole key인가 prefix/tenant key인가?</td><td style="padding:7px;border:1px solid #a7f3d0">canonical bytes와 query applicability</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">range scan이 주 workload인가?</td><td style="padding:7px;border:1px solid #a7f3d0">일반 whole-key Bloom 효과가 작으므로 index/cache에 투자</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">공격자가 query key를 고를 수 있는가?</td><td style="padding:7px;border:1px solid #a7f3d0">seeded hash, rate limit, 반복 FP 방어</td></tr>
+          </table>
+          <p><strong>출력 계약은 3값처럼 읽는다.</strong> bit 하나라도 0이면 <code>DEFINITELY_ABSENT</code>. 모두 1이면 <code>MAYBE_PRESENT</code>이므로 정확한 원본 조회가 필수다. Bloom filter 자체는 <code>PRESENT</code>를 증명하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">3. Architecture 그림: LSM point-read decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:31%;padding:12px;background:#047857;color:white;border-radius:8px"><strong>① Get(key)</strong></td><td style="padding:12px;background:#ecfdf5">canonicalize → snapshot/sequence → memtable 확인</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ 각 candidate SST의 key range 확인</td></tr>
+            <tr><td style="padding:12px;background:#059669;color:white;border-radius:8px"><strong>② Bloom probe</strong></td><td style="padding:12px;background:#ecfdf5">같은 hash/version/seed로 k개 bit 읽기</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↙ bit 0 하나: skip SST　　모두 1: MAYBE</td></tr>
+            <tr><td style="padding:12px;background:#065f46;color:white;border-radius:8px"><strong>③ Exact path</strong></td><td style="padding:12px;background:#ecfdf5">index → data block → key comparator → checksum</td></tr>
+            <tr><td align="center" colspan="2" style="color:#047857;font-weight:800">↓ newest visible value/tombstone 또는 다음 SST</td></tr>
+            <tr><td style="padding:12px;background:#064e3b;color:white;border-radius:8px"><strong>④ Result</strong></td><td style="padding:12px;background:#ecfdf5">정확한 value / NOT_FOUND / corruption·I/O error</td></tr>
+          </table>
+          <p>negative는 비싼 branch를 제거한다. positive는 “hit”가 아니라 exact path로 들어갈 허가다. 이 구분을 API 이름·metric·로그에 유지해야 FP를 cache hit처럼 잘못 해석하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">4. Bloom Filter ADT와 representation invariant</h2>
+          <ul style="padding-left:22px">
+            <li><code>create(capacity, targetFpr, hashVersion)</code>: m과 정수 k를 overflow 없이 계산하고 0으로 초기화한다.</li>
+            <li><code>add(x)</code>: canonical bytes의 k개 위치를 1로 만든다. 이미 1이어도 idempotent다.</li>
+            <li><code>mightContain(x)</code>: k개 중 하나라도 0이면 false, 모두 1이면 true다.</li>
+            <li><code>serialize/load</code>: m·k·seed/hash/canonicalizer version·payload checksum을 함께 보존한다.</li>
+            <li>표준 Bloom에는 <code>remove</code>가 없다. 삭제가 필요하면 immutable set 재구축 또는 counter·다른 filter를 선택한다.</li>
+          </ul>
+          <p><strong>Representation invariant(RI)</strong></p>
+          <ol style="padding-left:22px">
+            <li><code>m&gt;0</code>, <code>1≤k≤safeLimit</code>, bit storage는 최소 m bit이며 padding은 질의 대상이 아니다.</li>
+            <li>각 inserted canonical key x에 대해 모든 <code>position_i(x)</code> bit가 1이다.</li>
+            <li>build와 query의 canonicalizer, hash version, seed, m, k가 정확히 같다.</li>
+            <li>filter가 live인 동안 bit는 0→1만 가능하다. 임의의 1→0은 금지한다.</li>
+            <li>SST filter라면 filter generation/file identity와 immutable SST key set이 일치한다.</li>
+            <li>serialized metadata와 bit payload는 length·version·checksum 검사를 통과해야 usable하다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#047857">5. bit가 채워지는 확률부터 FPR까지</h2>
+          <p>한 hash가 특정 bit를 건드리지 않을 확률은 <code>1−1/m</code>이다. n개 원소에 k번씩, 총 kn번 독립·균등하게 위치를 고른다고 근사하면:</p>
+          <div style="padding:16px;background:#ecfdf5;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px">
+            P(bit=0) = (1−1/m)^(kn) ≈ e^(−kn/m)<br>
+            q = P(bit=1) ≈ 1−e^(−kn/m)<br>
+            FPR ≈ q^k = (1−e^(−kn/m))^k
+          </div>
+          <p>k가 너무 작으면 bit를 적게 읽지만 공간을 충분히 활용하지 못한다. 너무 크면 한 key가 너무 많은 bit를 1로 만들어 saturation과 CPU/cache cost를 키운다. 미분하면 근사 FPR을 최소화하는 값은:</p>
+          <div style="padding:16px;background:#d1fae5;border-radius:10px;text-align:center"><strong>k* = (m/n)·ln 2</strong>　→　<strong>FPR ≈ (0.6185)^(m/n)</strong>　→　최적점의 density ≈ 1/2</div>
+          <p>k는 실제로 정수이므로 반올림 후보를 측정한다. hash의 독립·균등 가정, 작은 filter의 rounding, blocked layout, skew·공격 입력 때문에 공식은 보장이 아니라 capacity model이다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">6. bits/key 예산표와 기대 I/O</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px;text-align:center">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">bits/key</th><th style="padding:7px;border:1px solid #a7f3d0">선택 k</th><th style="padding:7px;border:1px solid #a7f3d0">근사 FPR</th><th style="padding:7px;border:1px solid #a7f3d0">1억 key payload</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">5</td><td style="padding:7px;border:1px solid #a7f3d0">3</td><td style="padding:7px;border:1px solid #a7f3d0">9.18%</td><td style="padding:7px;border:1px solid #a7f3d0">약 59.6 MiB</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">10</td><td style="padding:7px;border:1px solid #a7f3d0">7</td><td style="padding:7px;border:1px solid #a7f3d0">0.819%</td><td style="padding:7px;border:1px solid #a7f3d0">약 119.2 MiB</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">15</td><td style="padding:7px;border:1px solid #a7f3d0">10</td><td style="padding:7px;border:1px solid #a7f3d0">0.0744%</td><td style="padding:7px;border:1px solid #a7f3d0">약 178.8 MiB</td></tr>
+          </table>
+          <p>없는 key 하나가 R개의 독립 SST 후보를 검사하고 각 filter의 FPR이 p라면 불필요한 exact read의 기대값은 <strong>R·p</strong>다. R=20, p≈0.00819이면 약 0.164회다. 그러나 적어도 하나의 false-positive SST를 만날 확률은 <code>1−(1−p)^R≈15.2%</code>다. 평균뿐 아니라 tail도 본다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">7. 정당성: 왜 false negative가 없어야 하나</h2>
+          <p><strong>정리:</strong> x를 add했고 RI 2~4가 유지되면 <code>mightContain(x)=true</code>다.</p>
+          <ol style="padding-left:22px">
+            <li>add(x)는 query(x)가 계산할 동일한 k개 위치를 모두 1로 만든다.</li>
+            <li>다른 원소의 add는 bit를 1로 만들 뿐 0으로 되돌리지 않는다.</li>
+            <li>따라서 query 시 x의 k개 bit는 모두 1이며 true를 반환한다.</li>
+          </ol>
+          <p><strong>False positive는 왜 가능한가?</strong> x를 넣지 않아도 다른 원소들이 우연히 x의 k개 위치를 모두 1로 만들 수 있다. 그래서 true는 membership 증명이 아니다.</p>
+          <p><strong>최소 삭제 반례:</strong> a와 b가 공유하는 bit 3이 1이라고 하자. a를 삭제하며 bit 3을 0으로 지우면 아직 집합에 있는 b의 query가 0을 보고 false negative가 된다. counter를 쓰더라도 overflow/underflow, duplicate add/remove contract가 필요하다.</p>
+          <p><strong>운영 반례:</strong> build는 Unicode NFC bytes, query는 원본 bytes를 hash하거나; comparator는 trailing space를 무시하지만 filter는 raw bytes를 쓰거나; SST 교체 후 옛 filter를 새 file에 연결하면 존재하는 key를 skip할 수 있다. 이는 확률 문제가 아니라 metadata/canonicalization 버그다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">8. 시간·공간·amortized complexity와 locality</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">연산</th><th style="padding:7px;border:1px solid #a7f3d0">시간</th><th style="padding:7px;border:1px solid #a7f3d0">공간·locality</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">create</td><td style="padding:7px;border:1px solid #a7f3d0">Θ(m/word) zero-fill</td><td style="padding:7px;border:1px solid #a7f3d0">m bits + metadata</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">add/query</td><td style="padding:7px;border:1px solid #a7f3d0">Θ(k); k를 상수로 보면 O(1)</td><td style="padding:7px;border:1px solid #a7f3d0">표준형은 최대 k개 pseudo-random cache line</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">build n keys</td><td style="padding:7px;border:1px solid #a7f3d0">Θ(nk)</td><td style="padding:7px;border:1px solid #a7f3d0">temporary hash buffer·parallel merge 고려</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">serialize/load</td><td style="padding:7px;border:1px solid #a7f3d0">Θ(m/word)</td><td style="padding:7px;border:1px solid #a7f3d0">checksum·cache admission·pinning</td></tr>
+          </table>
+          <p>Bloom filter에는 dynamic-array식 상각 업데이트가 본질적으로 필요하지 않다. 하지만 capacity를 넘겨도 구조는 동작한 채 FPR만 서서히 망가지는 <strong>quality debt</strong>가 생긴다. n이 변하는 mutable set이면 재구축 비용 Θ(nk)을 언제 지불할지 운영 정책이 필요하다.</p>
+          <p>표준 k random bit probe는 filter가 LLC보다 크면 cache miss가 많다. blocked/cache-line-local Bloom은 먼저 한 block을 고르고 그 안의 bit만 검사해 locality를 개선하지만, shard별 key 수 분산과 작은 block 때문에 FPR 모델이 달라진다. asymptotic O(k)가 같아도 CPU stall은 다르다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">9. 직접 구현: packed bitset + double hashing</h2>
+          <div style="padding:14px;background:#0f172a;color:#d1fae5;border-radius:10px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">class Bloom:
+    def __init__(self, capacity, bits_per_key):
+        self.m = checked_mul(capacity, bits_per_key)
+        self.k = max(1, round(bits_per_key * log(2)))
+        self.bits = bytearray((self.m + 7) // 8)
+
+    def positions(self, key):
+        h1, h2 = hash_pair(canonical_bytes(key))
+        h2 |= 1
+        for i in range(self.k):
+            yield (h1 + i * h2) % self.m
+
+    def add(self, key):
+        for p in self.positions(key):
+            self.bits[p >> 3] |= 1 << (p &amp; 7)
+
+    def might_contain(self, key):
+        return all(self.bits[p >> 3] &amp; (1 << (p &amp; 7))
+                   for p in self.positions(key))</div>
+          <p><strong>코드 리뷰 포인트:</strong> 교육용 <code>hash_pair</code>를 production crypto로 오해하지 않는다. <code>capacity*bits_per_key</code>와 byte rounding을 checked arithmetic으로 계산하고, deterministic seed/version을 파일 metadata에 넣으며, 사용자 key와 internal sequence를 어느 수준에서 hash할지 명확히 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">10. 테스트 전략: “FPR이 낮다”보다 FN=0이 먼저</h2>
+          <ol style="padding-left:22px">
+            <li><strong>RI test:</strong> m/k/length, padding, density bounds, add 후 모든 위치가 1인지 검사한다.</li>
+            <li><strong>No-FN test:</strong> 넣은 모든 key를 다시 질의한다. 한 건이라도 false면 즉시 실패한다.</li>
+            <li><strong>Oracle test:</strong> exact set과 함께 random add/query를 실행해 false negative는 0, false positive만 집계한다.</li>
+            <li><strong>Serialization test:</strong> round-trip 후 bit·metadata 동일, truncation/bit flip/version mismatch를 검출한다.</li>
+            <li><strong>Canonicalization test:</strong> comparator가 같다고 보는 모든 key 쌍이 같은 filter key가 되는지 property test한다.</li>
+            <li><strong>Capacity sweep:</strong> 0.5n, n, 2n 삽입에서 density와 FPR 증가를 이론과 비교한다.</li>
+            <li><strong>Adversarial test:</strong> 동일 prefix, patterned key, 반복 false-positive key, hash seed rotation을 시험한다.</li>
+          </ol>
+          <p><strong>통계 주의:</strong> q개 absent query에서 관측 FPR p̂의 표준오차는 대략 <code>sqrt(p̂(1−p̂)/q)</code>다. 0.1% 목표를 1,000번 질의해 1건 봤다고 튜닝하지 말고 충분한 sample과 신뢰구간을 쓴다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">11. 재현 benchmark와 결과</h2>
+          <p>CPython 3.9.1에서 64-bit 정수 20만 개를 packed bytearray Bloom에 넣고, 겹치지 않는 100만 개를 질의했다. splitmix-style mixer 두 개와 double hashing을 사용했으며 모든 inserted key 20만 개를 다시 검사했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px;text-align:center">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">bits/key·k</th><th style="padding:7px;border:1px solid #a7f3d0">density</th><th style="padding:7px;border:1px solid #a7f3d0">이론 FPR</th><th style="padding:7px;border:1px solid #a7f3d0">관측 FPR</th><th style="padding:7px;border:1px solid #a7f3d0">FN</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">5 · 3</td><td style="padding:7px;border:1px solid #a7f3d0">0.450878</td><td style="padding:7px;border:1px solid #a7f3d0">0.091849</td><td style="padding:7px;border:1px solid #a7f3d0">0.091582</td><td style="padding:7px;border:1px solid #a7f3d0">0</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">10 · 7</td><td style="padding:7px;border:1px solid #a7f3d0">0.503219</td><td style="padding:7px;border:1px solid #a7f3d0">0.008194</td><td style="padding:7px;border:1px solid #a7f3d0">0.008336</td><td style="padding:7px;border:1px solid #a7f3d0">0</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">15 · 10</td><td style="padding:7px;border:1px solid #a7f3d0">0.486547</td><td style="padding:7px;border:1px solid #a7f3d0">0.000744</td><td style="padding:7px;border:1px solid #a7f3d0">0.000699</td><td style="padding:7px;border:1px solid #a7f3d0">0</td></tr>
+          </table>
+          <p>각각 5/10/15 bits/key의 build는 0.260/0.350/0.468초, 100만 absent query는 1.364/1.432/1.434초였다. 5만 key씩 든 20개 SST filter를 10만 absent get으로 검사한 실험은 200만 filter check 중 16,342 positive, get당 불필요한 exact read 0.16342회를 기록했다.</p>
+          <p><strong>해석 한계:</strong> 한 번의 Python 실행이고 warm cache, 정수 key, 독립 query다. 실제 SSD I/O·index/data cache·compression·prefix transform·small-filter rounding·concurrency가 없다. 시간 숫자를 제품에 일반화하지 말고 이론 FPR↔관측 FPR↔후속 read의 연결만 사용한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">12. Benchmark 함정과 올바른 비교</h2>
+          <ul style="padding-left:22px">
+            <li>filter만 microbenchmark하지 말고 end-to-end get p50/p99, physical reads, cache churn, CPU를 함께 측정한다.</li>
+            <li>hit/miss 비율, candidate SST 수, cache warm/cold, point/prefix/range를 분리한다.</li>
+            <li>같은 총 memory에서 filter와 block cache가 경쟁한다. filter를 늘려 data cache를 줄인 결과까지 포함한다.</li>
+            <li>bulk-load 직후가 아니라 compaction으로 file size·level 분포가 안정된 steady state를 본다.</li>
+            <li>negative query가 inserted set과 겹치지 않는지 exact oracle로 확인한다.</li>
+            <li>평균 FPR만 보지 말고 file별 n·density·FPR 분포와 반복되는 hot false-positive key를 본다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#047857">13. Error handling: filter는 최적화이지 진실의 원천이 아니다</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th align="left" style="padding:7px;border:1px solid #a7f3d0">실패</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">안전한 처리</th><th align="left" style="padding:7px;border:1px solid #a7f3d0">위험한 anti-pattern</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">filter missing/unsupported</td><td style="padding:7px;border:1px solid #a7f3d0">filter bypass 후 exact SST 조회</td><td style="padding:7px;border:1px solid #a7f3d0">NOT_FOUND 반환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">length/checksum 오류</td><td style="padding:7px;border:1px solid #a7f3d0">corruption metric+fail-open; SST checksum은 별도 검증</td><td style="padding:7px;border:1px solid #a7f3d0">깨진 bit를 신뢰해 skip</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">hash/version mismatch</td><td style="padding:7px;border:1px solid #a7f3d0">policy name/version 비교, incompatible이면 bypass/rebuild</td><td style="padding:7px;border:1px solid #a7f3d0">새 hash로 옛 bit 질의</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">allocation/overflow</td><td style="padding:7px;border:1px solid #a7f3d0">checked size, SST build 중 filter만 생략 가능하도록 계약</td><td style="padding:7px;border:1px solid #a7f3d0">작게 wrap된 filter 발행</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">capacity 초과</td><td style="padding:7px;border:1px solid #a7f3d0">n·density·observed FPR alert, rebuild/resize</td><td style="padding:7px;border:1px solid #a7f3d0">에러가 없으니 무한 삽입</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">반복 FP 공격</td><td style="padding:7px;border:1px solid #a7f3d0">secret seed·rotation·rate limit·exact negative cache</td><td style="padding:7px;border:1px solid #a7f3d0">공개 고정 hash만 신뢰</td></tr>
+          </table>
+          <p>특히 “filter corruption을 NOT_FOUND로 처리”하면 빠르게 틀린 결과를 낸다. fail-open은 성능을 잃지만 정확성은 보존한다. exact SST 자체가 손상됐으면 NOT_FOUND로 숨기지 말고 명시적 corruption/I/O error와 복구 경로를 사용한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">14. 실무 Best Practice와 관측성</h2>
+          <ol style="padding-left:22px">
+            <li>목표는 “FPR 최소”가 아니라 <strong>filter memory + CPU + avoided I/O + block-cache 효과</strong>의 총비용 최소다.</li>
+            <li>SST 예상 n과 memory budget으로 bits/key를 정하고 실제 density/FPR로 검증한다.</li>
+            <li>comparator/canonicalizer/prefix extractor와 filter key 변환을 하나의 versioned 계약으로 묶는다.</li>
+            <li>immutable SST와 함께 build·checksum·atomic publish하고 compaction output에는 새 filter를 만든다.</li>
+            <li>missing/corrupt/incompatible filter는 fail-open하고 background rebuild 또는 다음 compaction에서 교체한다.</li>
+            <li>large filter는 partition/cache 정책을 쓰고 metadata와 data cache를 포함한 전체 memory를 제한한다.</li>
+            <li>whole-key Bloom은 point get, prefix Bloom은 계약에 맞는 seek에서만 쓴다. 임의 range의 존재를 증명하지 않는다.</li>
+            <li>seed/hash는 성능·호환성·공격 모델을 고려해 versioning하고 migration 중 old/new reader 호환을 시험한다.</li>
+          </ol>
+          <p><strong>필수 지표:</strong> filter checked, useful negatives, positive, true positive, observed FPR, bit density, bytes/key, cache hit/miss/eviction, exact reads avoided/issued, filter decode/checksum error, bypass reason, query별 candidate SST 수.</p>
+          <p>RocksDB식 point lookup 관측에서는 <code>(positive−truePositive)/(positive−truePositive+trueNegative)</code>로 absent-query FPR을 계산한다. positive/checked만 나누면 실제 key hit가 섞여 오해할 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#047857">15. 언제 Bloom filter가 맞지 않는가</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#d1fae5"><th style="padding:7px;border:1px solid #a7f3d0">상황</th><th style="padding:7px;border:1px solid #a7f3d0">이유·대안</th></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">정확한 membership 답 자체가 필요</td><td style="padding:7px;border:1px solid #a7f3d0">exact hash/set/index를 사용; Bloom은 앞단 최적화만 가능</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">삭제가 매우 잦은 mutable set</td><td style="padding:7px;border:1px solid #a7f3d0">counting Bloom/cuckoo filter 또는 주기적 immutable rebuild 검토</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">대부분 range scan</td><td style="padding:7px;border:1px solid #a7f3d0">zone map, fence pointer, B+tree/index/cache가 더 직접적</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">dataset·index가 이미 RAM에 충분</td><td style="padding:7px;border:1px solid #a7f3d0">filter CPU/metadata가 이득보다 클 수 있어 A/B benchmark</td></tr>
+            <tr><td style="padding:7px;border:1px solid #a7f3d0">n 상한을 전혀 모름</td><td style="padding:7px;border:1px solid #a7f3d0">scalable/partitioned filter 또는 rebuild 가능한 lifecycle 필요</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#047857">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q1. Bloom filter의 FPR과 최적 k를 유도해 보세요.</strong><br>m bits, n keys, k hashes에서 한 bit가 0일 확률을 <code>(1−1/m)^(kn)≈e^(−kn/m)</code>로 잡는다. 따라서 FPR은 <code>(1−e^(−kn/m))^k</code>, 이를 최소화하면 <code>k=(m/n)ln2</code>이고 최적 density는 약 1/2다. 독립·균등 hash 근사와 정수 rounding을 함께 말한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#d1fae5;border-radius:10px"><strong>Q2. Bloom filter는 왜 false negative가 없고 삭제는 왜 어려운가요?</strong><br>insert가 query할 모든 bit를 1로 만들고 bit를 지우지 않으면 membership key의 bit는 항상 1이다. 하지만 여러 key가 bit를 공유하므로 한 key 삭제 시 bit를 0으로 만들면 다른 key에 FN이 생긴다. immutable rebuild 또는 counter의 정확한 add/remove 계약이 필요하다.</div>
+          <div style="padding:16px;background:#d1fae5;border-radius:10px"><strong>Q3. LSM에서 10 bits/key를 켜면 끝인가요?</strong><br>아니다. workload의 point miss·SST 후보 수·I/O 비용과 전체 memory를 확인하고 whole/prefix semantics, comparator 호환, filter cache, observed FPR/useful negatives를 측정한다. corruption/version mismatch는 fail-open하며 range scan에는 효과가 제한적이다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>Bloom의 true가 아니라 false만 확정적인 이유는?</li>
+            <li>m=10n일 때 최적 k와 근사 FPR을 계산하라.</li>
+            <li>density가 0.9라면 k=7 query의 대략적 FPR은?</li>
+            <li>표준 Bloom에서 bit를 직접 지우면 생기는 최소 반례를 설명하라.</li>
+            <li>comparator와 filter canonicalization 불일치가 왜 확률적 FP가 아니라 FN 버그인가?</li>
+            <li>R개 SST에서 absent get의 기대 불필요 read와 하나 이상 발생 확률은 어떻게 다른가?</li>
+            <li>range scan에 whole-key Bloom이 보통 큰 도움이 되지 않는 이유는?</li>
+            <li>filter checksum 실패에서 fail-open이 correctness를 보존하는 이유는?</li>
+            <li>Day 30의 SST immutability가 오늘 filter lifecycle을 단순하게 만드는 이유는?</li>
+            <li>filter memory를 늘렸는데 get p99가 나빠질 수 있는 cache trade-off를 설명하라.</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 32 · compaction과 read/write amplification</strong><br>오늘 filter가 불필요한 read를 줄였다면, 내일은 여러 SST를 merge할 때 실제로 몇 byte를 읽고 쓰는지, leveled/tiered 정책이 read·write·space amplification과 tail latency를 어떻게 바꾸는지 계산하고 장애 실험으로 연결한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#047857">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://dl.acm.org/doi/10.1145/362686.362692" style="color:#047857">Burton H. Bloom, Space/Time Trade-offs in Hash Coding with Allowable Errors (CACM, 1970)</a> — approximate membership와 허용 오차의 원 논문.</li>
+            <li><a href="https://www.cs.cmu.edu/~15451-f16/lectures/lec08-lsh.pdf" style="color:#047857">CMU 15-451/651 Lecture 8</a> — bit 확률, false-positive 식과 최적 hash 수 유도.</li>
+            <li><a href="https://www.cs.cmu.edu/~odonnell/papers/probability-and-computing-lecture-notes.pdf" style="color:#047857">CMU Probability and Computing Lecture Notes, §4.1</a> — no false negatives, bits/item와 확률 분석.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter" style="color:#047857">RocksDB Bloom Filter</a> — SST full/block/partitioned filter, bits/key, prefix/whole-key와 production metrics.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning" style="color:#047857">RocksDB Setup Options and Basic Tuning</a> — point lookup에는 유리하고 range scan에는 제한적인 적용 기준.</li>
+            <li><a href="https://github.com/facebook/rocksdb/blob/main/include/rocksdb/statistics.h" style="color:#047857">RocksDB statistics.h</a> — useful, full positive, true positive 등 관측 지표 정의.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Basic-Operations" style="color:#047857">RocksDB Basic Operations</a> — comparator와 filter policy의 key 동등성 계약.</li>
+            <li><a href="https://github.com/google/leveldb/blob/main/util/bloom.cc" style="color:#047857">LevelDB bloom.cc</a> — production C++ Bloom filter format과 double-hash식 위치 생성의 참고 구현.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:12px">수식은 독립·균등 hash 근사이며 구현·수치는 교육용 단일 환경이다. production 선택은 실제 key 분포, comparator, cache·I/O 비용, filter 구현·버전, SST lifecycle, 공격·corruption 모델에서 재검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
