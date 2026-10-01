@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 32 · compaction과 read/write amplification</title>
+</head>
+<body style="margin:0;background:#172554;color:#27324a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#172554">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#1e3a8a;color:#eff6ff">
+          <div style="color:#bfdbfe;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 5 / DAY 32</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">정렬 파일을 합치는 순간<br>비용과 정합성이 함께 움직인다</h1>
+          <p style="margin:0;color:#dbeafe">compaction · leveled/tiered · amplification · backpressure · 210분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #2563eb;background:#dbeafe;border-radius:10px"><strong>한 줄 요약</strong><br>Compaction은 여러 immutable sorted run을 새 run으로 병합해 중복 version과 안전한 tombstone을 제거하는 <strong>background transaction</strong>이며, leveled와 tiered 정책은 write·read·space amplification 중 무엇을 더 지불할지 결정한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Compaction</strong></td><td style="padding:7px;border:1px solid #bfdbfe">여러 정렬 파일을 읽어 key 순서로 병합하고 새 SSTable을 만든 뒤 옛 파일을 교체하는 작업.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Sorted run</strong></td><td style="padding:7px;border:1px solid #bfdbfe">key 순으로 정렬된 하나의 논리 스트림. 여러 SST 파일로 range-partition될 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Level</strong></td><td style="padding:7px;border:1px solid #bfdbfe">크기 목표와 overlap 규칙을 가진 LSM의 층. L0은 보통 파일 간 key range가 겹칠 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Leveled</strong></td><td style="padding:7px;border:1px solid #bfdbfe">각 non-L0 level을 대체로 하나의 non-overlapping run으로 유지하는 정책. read/space 비용을 줄이는 대신 rewrite가 많다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Tiered / Universal</strong></td><td style="padding:7px;border:1px solid #bfdbfe">비슷한 크기의 여러 run을 모아 더 큰 run으로 합치는 정책. write는 줄지만 read·임시 공간이 늘 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Fanout T</strong></td><td style="padding:7px;border:1px solid #bfdbfe">인접 level의 목표 크기 비율. 예: T=10이면 다음 level이 약 10배 크다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Overlap</strong></td><td style="padding:7px;border:1px solid #bfdbfe">두 파일의 key range가 교차하는 상태. 병합 입력과 read 후보 수를 결정한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Compaction picker</strong></td><td style="padding:7px;border:1px solid #bfdbfe">부채·크기·overlap·hot range를 보고 다음 병합 입력을 선택하는 정책 모듈.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Write amplification(WA)</strong></td><td style="padding:7px;border:1px solid #bfdbfe">저장장치에 실제 쓴 byte ÷ 사용자가 논리적으로 쓴 byte.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Read amplification(RA)</strong></td><td style="padding:7px;border:1px solid #bfdbfe">한 논리 read를 답하기 위해 확인한 run/file/block 또는 물리 read의 수.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Space amplification(SA)</strong></td><td style="padding:7px;border:1px solid #bfdbfe">물리 저장 byte ÷ 최신 live logical data byte. obsolete version·tombstone·임시 output을 포함한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Tombstone</strong></td><td style="padding:7px;border:1px solid #bfdbfe">삭제 사실을 더 오래된 value보다 먼저 보이게 하는 삭제 표식.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Snapshot</strong></td><td style="padding:7px;border:1px solid #bfdbfe">특정 sequence 시점의 view. 오래된 version을 함부로 버리지 못하게 한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Compaction debt</strong></td><td style="padding:7px;border:1px solid #bfdbfe">정책 목표를 회복하려면 앞으로 읽고 써야 할 pending bytes.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Write stall</strong></td><td style="padding:7px;border:1px solid #bfdbfe">flush/compaction이 ingest를 따라가지 못할 때 쓰기를 늦추거나 멈춰 부채 폭주를 막는 backpressure.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Subcompaction</strong></td><td style="padding:7px;border:1px solid #bfdbfe">큰 key range를 독립 구간으로 나눠 병렬 merge하는 방식.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">2. 문제·입출력·제약 mental model</h2>
+          <p><strong>문제:</strong> flush만 계속하면 최신 값, 이전 값, tombstone이 수십 개 SST에 흩어진다. point get은 많은 run을 확인하고 range scan은 k-way merge를 반복하며 disk도 obsolete bytes로 찬다. 그러나 매 write마다 즉시 정리하면 foreground latency와 device write가 폭증한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th align="left" style="padding:7px;border:1px solid #bfdbfe">먼저 묻는 제약</th><th align="left" style="padding:7px;border:1px solid #bfdbfe">설계 결과</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">write MB/s와 storage의 지속 compaction MB/s는?</td><td style="padding:7px;border:1px solid #bfdbfe">지속 가능 ingest, background concurrency, stall 임계값</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">point read·range scan·update 비율은?</td><td style="padding:7px;border:1px solid #bfdbfe">leveled/tiered/hybrid, Bloom·cache 예산</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">key range가 순차·균등·hotspot 중 무엇인가?</td><td style="padding:7px;border:1px solid #bfdbfe">overlap과 rewrite 편향, picker 우선순위</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">snapshot·TTL·삭제 보존 계약은?</td><td style="padding:7px;border:1px solid #bfdbfe">version/tombstone drop 가능 조건</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">disk headroom과 flash endurance는?</td><td style="padding:7px;border:1px solid #bfdbfe">temporary output 한도, WA 상한, emergency policy</td></tr>
+          </table>
+          <p><strong>핵심 식:</strong> foreground ingest가 λ bytes/s, compaction이 실제로 처리해야 하는 물리 write가 대략 λ·WA라면 device와 background CPU가 이를 지속해서 감당해야 한다. 순간 burst는 buffer가 흡수하지만 장기간 서비스율 μ가 도착률보다 작으면 <code>debt(t+Δ)≈debt(t)+(λ·WA−μ)Δ</code>로 커진다. 큰 buffer는 시간을 벌 뿐 불안정한 평균을 고치지 못한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">3. Architecture 그림: compaction은 background transaction</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:34%;padding:12px;background:#1d4ed8;color:white;border-radius:8px"><strong>① Observe debt</strong></td><td style="padding:12px;background:#eff6ff">level score, L0 files, pending bytes, disk headroom</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ picker가 input과 모든 필수 overlap을 pin</td></tr>
+            <tr><td style="padding:12px;background:#2563eb;color:white;border-radius:8px"><strong>② K-way merge</strong></td><td style="padding:12px;background:#eff6ff">internal key=(userKey, sequence↓, type) 순으로 stream</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ snapshot/하위 level을 보고 version·tombstone drop</td></tr>
+            <tr><td style="padding:12px;background:#1e40af;color:white;border-radius:8px"><strong>③ Build output</strong></td><td style="padding:12px;background:#eff6ff">새 SST·index·Bloom·checksum을 temp file에 작성·sync</td></tr>
+            <tr><td align="center" colspan="2" style="color:#1d4ed8;font-weight:800">↓ manifest/version edit를 원자적으로 install</td></tr>
+            <tr><td style="padding:12px;background:#1e3a8a;color:white;border-radius:8px"><strong>④ Publish &amp; retire</strong></td><td style="padding:12px;background:#eff6ff">새 reader는 output 사용, 옛 reader가 unpin 후 input 삭제</td></tr>
+          </table>
+          <p>파일을 먼저 삭제하고 output을 만드는 순서는 금지다. <strong>prepare output → durability 확인 → metadata commit → reader epoch/refcount 종료 → reclaim</strong> 순서가 crash safety와 lock-free read를 동시에 지킨다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">4. Compaction ADT와 representation invariant</h2>
+          <p><strong>관리 연산:</strong> <code>pick()</code>, <code>compact(inputs, snapshots)</code>, <code>install(edit)</code>, <code>reclaim(obsolete)</code>, <code>pause/rateLimit()</code>. 사용자는 Put/Get만 보지만 저장 엔진 correctness는 이 background ADT에 의존한다.</p>
+          <ol style="padding-left:22px">
+            <li>모든 input/output entry는 internal comparator 순으로 정렬돼 있다.</li>
+            <li>non-L0 leveled level의 파일 key range는 정책상 서로 겹치지 않으며 picker는 다음 level의 모든 overlap을 포함한다.</li>
+            <li>각 user key에서 어떤 active snapshot이 관찰해야 하는 newest visible version도 제거하지 않는다.</li>
+            <li>tombstone은 더 오래된 value가 input 밖의 하위 level에서 다시 나타날 수 없고 snapshot도 필요로 하지 않을 때만 제거한다.</li>
+            <li>output file의 length·index·filter·checksum·sync가 성공하기 전에는 manifest가 output을 참조하지 않는다.</li>
+            <li>한 version edit는 input 제거와 output 추가를 함께 표현한다. reader는 old 또는 new version 중 하나를 본다.</li>
+            <li>input은 old version reader가 모두 unpin할 때까지 물리 삭제하지 않는다.</li>
+            <li>실패·취소·ENOSPC에서는 installed set이 바뀌지 않으며 orphan temp만 안전하게 정리한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">5. 정당성: per-key merge stream으로 증명하기</h2>
+          <p>각 run이 internal key 순으로 정렬됐으므로 min-heap을 이용한 k-way merge는 전체 union을 같은 순서로 방출한다. 한 user key의 version은 sequence 내림차순으로 연속해 나온다.</p>
+          <ol style="padding-left:22px">
+            <li>현재 heap에는 각 run의 아직 소비하지 않은 최소 internal key가 하나씩 있다.</li>
+            <li>heap 최소는 전체 미소비 원소 중 최소이므로 이를 출력하면 prefix가 계속 정렬된다.</li>
+            <li>같은 user key에서는 가장 최신 version부터 보며, 각 snapshot마다 첫 visible version만 보존하면 관찰 결과가 유지된다.</li>
+            <li>입력 전체와 더 낮은 level에 오래된 value가 없음을 증명한 tombstone만 버리면 삭제된 값이 부활하지 않는다.</li>
+            <li>모든 run이 소진되면 output은 input multiset에서 안전하게 제거 가능한 version만 제외한 동일 logical history다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>최소 반례 — tombstone 부활:</strong> L1에 <code>DELETE(k, seq=9)</code>, L3에 <code>PUT(k,v,seq=3)</code>가 있다. L1→L2 compaction이 tombstone을 “삭제니까 불필요”라며 버리면 이후 Get(k)가 L3의 v를 찾아 삭제가 취소된다. bottommost-for-range 또는 하위 overlap 부재를 증명하기 전에는 tombstone을 남긴다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">6. 시간·공간 복잡도와 I/O cost</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">단계</th><th style="padding:7px;border:1px solid #bfdbfe">CPU</th><th style="padding:7px;border:1px solid #bfdbfe">I/O·공간</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">k-way merge N entries</td><td style="padding:7px;border:1px solid #bfdbfe">binary heap Θ(N log k), loser tree도 가능</td><td style="padding:7px;border:1px solid #bfdbfe">input B bytes sequential read + output ≤B write</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">version filtering</td><td style="padding:7px;border:1px solid #bfdbfe">Θ(N), snapshot lookup 비용 추가</td><td style="padding:7px;border:1px solid #bfdbfe">obsolete 비율만큼 output 감소</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">index/filter build</td><td style="padding:7px;border:1px solid #bfdbfe">Θ(output entries)</td><td style="padding:7px;border:1px solid #bfdbfe">metadata와 cache churn</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">install</td><td style="padding:7px;border:1px solid #bfdbfe">file count에 비례한 metadata</td><td style="padding:7px;border:1px solid #bfdbfe">manifest append+sync; data보다 작아도 latency-critical</td></tr>
+          </table>
+          <p>Big-O만 보면 둘 다 선형 merge지만 device 관점에서는 <strong>몇 번 다시 쓰느냐</strong>가 핵심이다. leveled에서 작은 L의 새 data가 큰 L+1의 overlap을 반복해서 rewrite할 수 있다. tiered는 각 merge 단계에서 대체로 한 번씩 쓰지만 동시에 여러 run을 남긴다. 실제 WA 식은 fanout, level 수, key skew, compression, deletes, trivial move, picker와 workload에 따라 달라지므로 교과서 근사치를 운영 보장으로 쓰지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">7. 세 amplification을 한 장으로 비교</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px;text-align:left">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">정책</th><th style="padding:7px;border:1px solid #bfdbfe">Write</th><th style="padding:7px;border:1px solid #bfdbfe">Read</th><th style="padding:7px;border:1px solid #bfdbfe">Space</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Leveled</strong></td><td style="padding:7px;border:1px solid #bfdbfe">큰 next-level overlap 재작성으로 높아질 수 있음</td><td style="padding:7px;border:1px solid #bfdbfe">L0 전부 + 각 level 최대 한 range 후보에 가까움</td><td style="padding:7px;border:1px solid #bfdbfe">중복 run이 적어 낮은 편</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Tiered</strong></td><td style="padding:7px;border:1px solid #bfdbfe">비슷한 run끼리 합쳐 낮은 편</td><td style="padding:7px;border:1px solid #bfdbfe">여러 run을 probe/merge; Bloom이 miss를 완화</td><td style="padding:7px;border:1px solid #bfdbfe">옛/새 run과 major compaction temp로 높음</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>FIFO</strong></td><td style="padding:7px;border:1px solid #bfdbfe">rewrite 최소</td><td style="padding:7px;border:1px solid #bfdbfe">겹치는 파일 많음</td><td style="padding:7px;border:1px solid #bfdbfe">size/TTL 한도에서 오래된 파일 drop</td></tr>
+          </table>
+          <p><strong>면접에서 좋은 답:</strong> “tiered가 항상 빠르다”가 아니라, write-heavy·충분한 disk·Bloom point read이면 tiered가 유리할 수 있고, read-heavy·range scan·엄격한 disk budget이면 leveled가 유리할 수 있다고 workload와 SLO로 조건을 붙인다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">8. 직접 구현: crash-safe compact 의사코드</h2>
+          <div style="padding:14px;background:#0f172a;color:#dbeafe;border-radius:10px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">def compact(plan, oldest_snapshot):
+    inputs = version.pin(plan.file_ids)       # deletion 방지
+    temp_outputs = []
+    try:
+        stream = merge_by_internal_key(inputs)
+        writer = new_temp_sst()
+        for group in group_by_user_key(stream):
+            for entry in retain_visible_versions(group, oldest_snapshot,
+                                                   plan.bottommost_for_range):
+                writer.add(entry)
+            if writer.should_cut_file():
+                temp_outputs.append(writer.finish_and_sync())
+                writer = new_temp_sst()
+        if not writer.empty():
+            temp_outputs.append(writer.finish_and_sync())
+
+        verify_bounds_checksums(temp_outputs)
+        edit = VersionEdit(add=temp_outputs, remove=inputs)
+        manifest.append_and_sync(edit)         # commit point
+        version.install(edit)
+        obsolete_queue.defer_until_unpinned(inputs)
+        return OK
+    except (IOError, NoSpace, Cancelled) as e:
+        discard_uninstalled_temps(temp_outputs)
+        return e
+    finally:
+        version.unpin(inputs)</div>
+          <p><strong>코드 리뷰 포인트:</strong> partial output가 manifest에 들어가지 않는가, file number가 재사용되지 않는가, cancellation에도 input pin이 풀리는가, comparator가 모든 stage에서 같은가, range boundary에서 key group을 둘로 잘라 snapshot logic을 깨지 않는가를 본다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">9. 테스트: 결과뿐 아니라 transaction boundary를 때린다</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Differential:</strong> random Put/Delete/sequence/snapshot을 reference MVCC map과 compaction 전후 비교한다.</li>
+            <li><strong>Boundary:</strong> 같은 user key의 version이 파일 경계·subcompaction 경계·level boundary에 걸리게 한다.</li>
+            <li><strong>Tombstone:</strong> 하위 level에 old value가 있는/없는 경우, bottommost인/아닌 경우를 분리한다.</li>
+            <li><strong>Fault injection:</strong> input read, output append, checksum, fsync, manifest sync 각 지점에서 실패시키고 reopen 결과가 old 또는 new 중 하나인지 확인한다.</li>
+            <li><strong>ENOSPC:</strong> output 도중 disk full에서 live input과 manifest가 보존되고 temp cleanup이 idempotent인지 확인한다.</li>
+            <li><strong>Reader race:</strong> old version을 pin한 reader가 진행 중일 때 install/reclaim을 반복해 use-after-delete를 찾는다.</li>
+            <li><strong>Property:</strong> output 정렬, level overlap, key/value 결과, snapshot visibility, file reference count를 매 run 검증한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">10. Benchmark: 무엇을 어떻게 재야 하나</h2>
+          <p>단순히 “compaction 3초”만 재면 판단할 수 없다. 고정 dataset과 동일 mutation trace에서 아래를 함께 기록한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">축</th><th style="padding:7px;border:1px solid #bfdbfe">필수 측정</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Foreground</td><td style="padding:7px;border:1px solid #bfdbfe">Put/Get/scan throughput, p50/p95/p99/p999, timeout·stall duration</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Background</td><td style="padding:7px;border:1px solid #bfdbfe">input/output bytes, CPU seconds, compaction wall time, pending bytes</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Amplification</td><td style="padding:7px;border:1px solid #bfdbfe">WA=storage bytes/user bytes, RA=reads/query, SA=physical/live</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">Device</td><td style="padding:7px;border:1px solid #bfdbfe">bandwidth, queue depth, fsync latency, CPU steal, cache eviction, SSD wear</td></tr>
+          </table>
+          <p><strong>모형 실험:</strong> 64개의 같은 크기 run을 4개씩 tiered merge하면 각 logical byte는 64→16→4→1의 세 단계 output에 기록된다. flush를 1회로 세면 이상적 총 WA는 약 4다. 반면 point miss는 compaction 전 최대 64 run, 완전 병합 후 1 run을 확인한다. 이것은 정책의 방향을 보여주는 산술 모델이지, leveled overlap·compression·tombstone·cache가 있는 실제 엔진의 수치가 아니다.</p>
+          <p><strong>Benchmark 함정:</strong> page cache가 warm한지, compression이 같은지, compaction과 foreground가 같은 device를 공유하는지, dataset이 RAM보다 큰지, steady state까지 돌렸는지, logical value size와 key skew가 같은지 공개한다. 짧은 bulk load 결과를 24시간 steady workload에 일반화하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">11. Error handling과 crash state machine</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">실패</th><th style="padding:7px;border:1px solid #bfdbfe">안전한 처리</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">input checksum/read error</td><td style="padding:7px;border:1px solid #bfdbfe">install 중단, input 유지, corruption을 명시적으로 보고; 조용히 key skip 금지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">output write/fsync 실패</td><td style="padding:7px;border:1px solid #bfdbfe">temp orphan 정리, manifest 미변경, retry는 idempotent</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">manifest sync 실패</td><td style="padding:7px;border:1px solid #bfdbfe">commit 성공 여부를 recovery log/record framing으로 판별; 이름만 보고 추정 금지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">disk full</td><td style="padding:7px;border:1px solid #bfdbfe">reserve headroom, early slowdown, 불필요 temp 제거; live file 선삭제 금지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">shutdown/cancel</td><td style="padding:7px;border:1px solid #bfdbfe">safe points에서 취소하고 pin·memory·temp를 해제; install 중간 취소 금지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">stalled writer</td><td style="padding:7px;border:1px solid #bfdbfe">blocking/timeout/non-blocking 계약을 API에 노출하고 재시도는 idempotency key·backoff 사용</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">12. Production Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li><strong>지속률부터 계산:</strong> peak가 아니라 장기 ingest×WA가 device의 지속 write와 CPU budget 아래인지 확인한다.</li>
+            <li><strong>부채를 직접 관측:</strong> L0 file count, pending compaction bytes, oldest pending age, stall seconds를 SLO와 연결한다.</li>
+            <li><strong>headroom 예약:</strong> major/universal compaction은 input과 output이 동시에 존재한다. free disk 경보를 90% 이후에만 울리면 늦다.</li>
+            <li><strong>rate limit과 우선순위:</strong> background가 foreground p99를 망치지 않되, 지나친 throttling으로 debt가 발산하지 않게 closed-loop 조정한다.</li>
+            <li><strong>snapshot/iterator 수명 제한:</strong> 오래 열린 snapshot은 obsolete version과 파일 회수를 막아 SA를 높인다.</li>
+            <li><strong>subcompaction은 구간 균형 확인:</strong> key skew에서는 byte-balanced boundary와 병렬 I/O saturation을 측정한다.</li>
+            <li><strong>설정 한 번에 하나:</strong> fanout, file size, trigger, job count, compression을 동시에 바꾸면 원인을 잃는다.</li>
+            <li><strong>복구 리허설:</strong> kill -9, power-loss model, ENOSPC, corrupted file을 staging에서 반복하고 reopen 검증 시간을 잰다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">13. Anti-pattern과 놓치기 쉬운 함정</h2>
+          <ul style="padding-left:22px">
+            <li><strong>“L0 trigger를 크게 하면 stall이 사라진다”:</strong> 경보를 늦출 뿐 RA와 debt가 더 커질 수 있다.</li>
+            <li><strong>“background job을 무조건 늘린다”:</strong> device queue·CPU·cache를 foreground와 경쟁시켜 p99가 악화될 수 있다.</li>
+            <li><strong>“tombstone은 삭제 데이터라 즉시 버린다”:</strong> 하위 old value 부활 버그를 만든다.</li>
+            <li><strong>“WA는 DB stats 한 숫자”:</strong> flush/WAL/compaction/device·replication 포함 범위를 명시하지 않으면 비교가 틀린다.</li>
+            <li><strong>“평균 throughput만 본다”:</strong> install fsync·major merge·stall의 tail과 burst를 놓친다.</li>
+            <li><strong>“manual full compaction으로 치료”:</strong> peak I/O와 temporary space가 장애를 확대할 수 있어 예산·중단 조건이 필요하다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">14. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q1. Leveled와 tiered compaction을 workload로 선택해 보세요.</strong><br>먼저 read/write/scan 비율, latency SLO, disk headroom, SSD endurance, key skew를 묻는다. leveled는 non-overlap level로 RA·SA를 낮추지만 overlap rewrite로 WA가 커질 수 있다. tiered는 비슷한 run을 묶어 WA를 낮추지만 여러 run과 major merge 때문에 RA·SA·tail을 지불한다. Bloom·cache·hybrid도 함께 말한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q2. Compaction 중 tombstone을 언제 삭제할 수 있나요?</strong><br>해당 key range에서 더 낮은 level의 old value가 없고, 보존해야 할 snapshot/replica/backup이 그 삭제를 필요로 하지 않음을 증명해야 한다. 그렇지 않으면 delete marker 제거 후 old value가 부활한다. bottommost-for-range와 oldest snapshot 조건을 답한다.</div>
+          <div style="padding:16px;background:#dbeafe;border-radius:10px"><strong>Q3. write stall이 보이면 buffer와 thread를 늘리면 되나요?</strong><br>먼저 ingest λ, observed WA, compaction throughput μ, pending bytes 추세와 device saturation을 본다. buffer는 burst를 늦추고 thread는 device가 여유 있을 때만 이득이다. λ·WA&gt;μ이면 rate limit, WA 감소, device/capacity 확대, workload 분리 중 하나가 필요하다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">15. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>WA·RA·SA의 분자와 분모를 각각 정의하라.</li>
+            <li>leveled에서 L0와 그 아래 level의 overlap 규칙이 다른 이유는?</li>
+            <li>64개 run을 4-way tiered merge할 때 flush 포함 이상적 WA가 약 4인 이유는?</li>
+            <li>snapshot이 compaction의 space reclamation을 막는 과정을 설명하라.</li>
+            <li>manifest install 전에 input을 삭제하면 어떤 crash state가 생기는가?</li>
+            <li>λ·WA가 compaction 서비스율보다 클 때 buffer 증설이 근본 해결이 아닌 이유는?</li>
+            <li>Bloom filter는 tiered의 어떤 비용을 줄이고 어떤 비용은 못 줄이는가?</li>
+            <li>subcompaction boundary가 같은 user key의 version group을 나누면 왜 위험한가?</li>
+            <li>Day 30의 immutable SST가 compaction transaction을 단순하게 만드는 이유는?</li>
+            <li>Day 31의 false-positive rate가 낮아도 range scan RA가 남는 이유는?</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 33 · index 선택성과 composite key</strong><br>내일은 key 순서가 어떤 query를 좁히고 어떤 query를 full scan으로 만드는지, selectivity·leftmost prefix·cardinality 추정·covering trade-off를 자료구조와 실행계획 관점에서 연결한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://db.cs.berkeley.edu/cs286/papers/lsm-acta1996.pdf" style="color:#1d4ed8">O'Neil et al., The Log-Structured Merge-Tree (1996)</a> — LSM의 component merge와 amortized I/O 원 논문.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Compaction" style="color:#1d4ed8">RocksDB Compaction</a> — leveled, tiered(universal), hybrid와 amplification trade-off.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide" style="color:#1d4ed8">RocksDB Tuning Guide</a> — WA·RA·SA 정의, leveled 계산 예와 병목 진단.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Write-Stalls" style="color:#1d4ed8">RocksDB Write Stalls</a> — flush/compaction backlog, slowdown/stop과 non-blocking write 계약.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Compaction-Stats-and-DB-Status" style="color:#1d4ed8">RocksDB Compaction Stats and DB Status</a> — pending bytes, stall, per-level read/write 관측.</li>
+            <li><a href="https://github.com/google/leveldb/blob/main/doc/impl.md" style="color:#1d4ed8">LevelDB Implementation Notes</a> — overlapping input 선택, output splitting, obsolete value/tombstone 제거.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/Universal-Compaction" style="color:#1d4ed8">RocksDB Universal Compaction</a> — 낮은 WA와 높은 RA·SA, size-ratio/major merge 정책.</li>
+          </ul>
+          <p style="margin-top:26px;color:#64748b;font-size:12px">amplification의 정확한 값은 정의 범위와 workload·engine version·compression·cache·device에 의존한다. 공식은 capacity 가설로 사용하고, production 결정은 steady-state trace와 tail latency·disk headroom·복구 실험으로 검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
