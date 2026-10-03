@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 33 · index 선택성과 composite key</title>
+</head>
+<body style="margin:0;background:#1c1917;color:#292524;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#1c1917">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf8;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px 34px 28px;background:#7c2d12;color:#fff7ed">
+          <div style="color:#fed7aa;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 5 / DAY 33</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">인덱스는 열 목록이 아니라<br>정렬된 검색 공간이다</h1>
+          <p style="margin:0;color:#ffedd5">selectivity · composite key · leftmost prefix · covering · statistics · 210분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #ea580c;background:#ffedd5;border-radius:10px"><strong>한 줄 요약</strong><br>Composite B-tree는 key tuple을 <strong>사전식(lexicographic) 순서</strong>로 정렬하므로, 선행 equality와 그 다음 range가 하나의 좁은 연속 구간을 만들 때 강력하고, 실제 선택은 selectivity뿐 아니라 정렬·covering·heap locality·통계 오차·write 비용까지 합친 cost로 방어해야 한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Predicate</strong></td><td style="padding:7px;border:1px solid #fed7aa"><code>tenant_id=7</code>처럼 행을 남길지 판단하는 조건.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Cardinality</strong></td><td style="padding:7px;border:1px solid #fed7aa">행 수 또는 서로 다른 값의 수. 문맥을 명시해야 한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Selectivity</strong></td><td style="padding:7px;border:1px solid #fed7aa">조건을 통과한 행 수 ÷ 전체 행 수. 0에 가까울수록 좁게 거른다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Composite key</strong></td><td style="padding:7px;border:1px solid #fed7aa">둘 이상의 열로 만든 index key. 예: <code>(tenant_id, created_at)</code>.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Lexicographic order</strong></td><td style="padding:7px;border:1px solid #fed7aa">첫 열을 먼저 비교하고 같을 때만 다음 열을 비교하는 사전식 순서.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Leftmost prefix</strong></td><td style="padding:7px;border:1px solid #fed7aa">composite key의 왼쪽부터 끊지 않고 이어진 접두 열. <code>(a,b,c)</code>의 prefix는 <code>(a)</code>, <code>(a,b)</code>, <code>(a,b,c)</code>.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Equality prefix</strong></td><td style="padding:7px;border:1px solid #fed7aa">선행 key들이 모두 <code>=</code>/<code>IN</code>으로 고정된 부분. 다음 열의 range를 연속 구간으로 만든다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Range barrier</strong></td><td style="padding:7px;border:1px solid #fed7aa">첫 범위 조건 뒤의 key가 탐색 구간을 더 좁히지 못하고 filter로만 쓰이기 쉬운 현상.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Skip scan</strong></td><td style="padding:7px;border:1px solid #fed7aa">선행 열 조건이 없어도 그 열의 distinct group을 반복 탐색하는 최적화. 항상 이득이거나 모든 DB에 동일하지 않다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Covering index</strong></td><td style="padding:7px;border:1px solid #fed7aa">검색·출력에 필요한 열을 모두 담아 table/heap lookup을 피할 수 있는 index.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>INCLUDE column</strong></td><td style="padding:7px;border:1px solid #fed7aa">검색 순서에는 참여하지 않고 leaf payload로만 저장하는 열.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Index-only scan</strong></td><td style="padding:7px;border:1px solid #fed7aa">table row를 읽지 않고 index만으로 답하는 실행. MVCC visibility 때문에 물리 heap 확인이 남을 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>SARGable</strong></td><td style="padding:7px;border:1px solid #fed7aa">조건을 index search argument로 바꿀 수 있는 형태. 함수·암시적 cast가 이를 깨뜨릴 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Histogram / MCV</strong></td><td style="padding:7px;border:1px solid #fed7aa">값 분포 구간과 자주 나오는 값(most common values)을 요약한 optimizer 통계.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Correlation</strong></td><td style="padding:7px;border:1px solid #fed7aa">두 열이 독립이 아닌 관계. 예: country와 city. 독립 가정은 결과 수를 크게 틀릴 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Cost-based optimizer</strong></td><td style="padding:7px;border:1px solid #fed7aa">통계로 각 plan의 I/O·CPU·정렬 비용을 추정해 가장 싼 plan을 선택하는 구성요소.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">2. 문제·입출력·제약 mental model</h2>
+          <div style="padding:14px;background:#292524;color:#ffedd5;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">SELECT id, amount
+FROM orders
+WHERE tenant_id = 321
+  AND created_at BETWEEN :from AND :to
+ORDER BY created_at DESC
+LIMIT 50;</div>
+          <p>300만 행 중 tenant 321의 최근 주문 50개를 찾는다고 하자. <code>(tenant_id, created_at DESC)</code>는 tenant 321의 구간으로 내려간 뒤 시간순으로 50개만 읽는다. 반대로 <code>(created_at, tenant_id)</code>는 넓은 시간 구간을 훑으며 tenant를 filter할 수 있다. 같은 두 열이어도 순서가 작업량을 바꾼다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th align="left" style="padding:7px;border:1px solid #fed7aa">먼저 묻는 제약</th><th align="left" style="padding:7px;border:1px solid #fed7aa">설계 결정</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">어떤 query shape가 몇 %인가?</td><td style="padding:7px;border:1px solid #fed7aa">workload-weighted key order와 index 집합</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">각 equality/range의 실제 rows와 skew는?</td><td style="padding:7px;border:1px solid #fed7aa">leading key, histogram, MCV, extended stats</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">ORDER BY/GROUP BY/LIMIT이 있는가?</td><td style="padding:7px;border:1px solid #fed7aa">sort 제거, 방향, early stop 가능성</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">출력 열과 row width는?</td><td style="padding:7px;border:1px solid #fed7aa">covering/INCLUDE의 이득과 leaf bloat</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">read/write 비율과 HOT/update 패턴은?</td><td style="padding:7px;border:1px solid #fed7aa">index maintenance·WAL·cache·vacuum 비용</td></tr>
+          </table>
+          <p><strong>선택성 함정:</strong> “가장 distinct가 큰 열을 무조건 왼쪽”은 규칙이 아니다. equality로 tenant를 고정한 뒤 시간 range와 ORDER BY/LIMIT을 만족하는 것이 더 중요할 수 있다. 열 하나의 전역 selectivity가 아니라 <strong>전체 query가 만드는 연속 index interval과 필요한 row 수</strong>를 계산한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">3. Architecture 그림: SQL에서 물리 plan까지</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:35%;padding:12px;background:#c2410c;color:white;border-radius:8px"><strong>① Normalize</strong></td><td style="padding:12px;background:#fff7ed">predicate·type·collation·ORDER BY·LIMIT 분석</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ SARGable clause와 candidate access path 생성</td></tr>
+            <tr><td style="padding:12px;background:#ea580c;color:white;border-radius:8px"><strong>② Estimate</strong></td><td style="padding:12px;background:#fff7ed">histogram·MCV·NDV·correlation로 rows 추정</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ seq/index/bitmap/index-only + join/sort cost 비교</td></tr>
+            <tr><td style="padding:12px;background:#9a3412;color:white;border-radius:8px"><strong>③ Execute</strong></td><td style="padding:12px;background:#fff7ed">B-tree seek → leaf range scan → recheck → heap/visibility</td></tr>
+            <tr><td align="center" colspan="2" style="color:#c2410c;font-weight:800">↓ actual rows·buffers·time와 estimate 비교</td></tr>
+            <tr><td style="padding:12px;background:#7c2d12;color:white;border-radius:8px"><strong>④ Feedback</strong></td><td style="padding:12px;background:#fff7ed">ANALYZE/extended stats/index 변경 후 회귀 검증</td></tr>
+          </table>
+          <p>Optimizer는 “index가 존재하면 사용”하지 않는다. 예상 결과가 많고 random heap fetch가 비싸면 sequential scan이 더 싸다. 잘못된 plan은 index 부족뿐 아니라 stale statistics, 열 상관관계, parameter 분포, collation·cast 불일치에서 나온다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">4. Ordered Composite Index ADT와 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>seekLowerBound(keyPrefix)</code>, <code>scanRange(low, high)</code>, <code>next/prev</code>, <code>insert/delete(key,TID)</code>, 선택적으로 <code>returnPayload</code>. SQL index는 map처럼 보이지만 duplicate key와 MVCC row identity를 함께 다룬다.</p>
+          <ol style="padding-left:22px">
+            <li>모든 entry는 선언된 key 순서·ASC/DESC·NULL order·collation의 동일 comparator로 정렬된다.</li>
+            <li>동일 user key가 허용되면 TID/primary key 등 안정적인 tie-breaker로 entry를 구별한다.</li>
+            <li>B+tree의 separator는 자식 key range를 정확히 나누고 모든 leaf는 같은 depth이며 leaf chain은 전체 순서를 보존한다.</li>
+            <li>각 visible table row에는 필요한 index entry가 있고, 삭제/업데이트된 entry의 visibility 처리는 engine의 MVCC 계약과 일치한다.</li>
+            <li>UNIQUE라면 SQL NULL semantics를 포함한 uniqueness 범위에서 중복 live key가 없다.</li>
+            <li>INCLUDE payload는 search comparator·uniqueness에 참여하지 않으며 원본 row version과 연결된다.</li>
+            <li>expression/partial index는 정의한 expression이 immutable하고 predicate가 참인 row만 포함한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">5. 정당성: 왜 leftmost equality가 연속 구간을 만드는가</h2>
+          <p>index <code>(a,b,c)</code>는 tuple을 사전식으로 비교한다. <code>a=A AND b=B AND L≤c≤U</code>를 생각하자.</p>
+          <ol style="padding-left:22px">
+            <li><code>a&lt;A</code>인 tuple은 모두 목표 구간 앞, <code>a&gt;A</code>는 모두 뒤에 있다.</li>
+            <li><code>a=A</code> 안에서 <code>b&lt;B</code>는 앞, <code>b&gt;B</code>는 뒤에 있다.</li>
+            <li><code>a=A,b=B</code>가 고정된 block 안에서는 c가 정렬돼 있으므로 <code>[L,U]</code>가 하나의 연속 interval이다.</li>
+            <li>따라서 lower bound <code>(A,B,L)</code>로 한 번 내려가 upper bound를 넘을 때까지 순차 scan하면 정확히 답한다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>최소 반례 — 중간 key gap:</strong> <code>(a,b,c)</code>에서 <code>a=1 AND c=9</code>만 주어지면, c=9는 b=0 block, b=1 block, b=2 block…에 흩어진다. 하나의 좁은 interval이 아니므로 a=1 전체를 scan해 c를 filter하거나, distinct b별로 재탐색하는 skip scan이 필요하다.</div>
+          <p><strong>Range barrier:</strong> <code>a=1 AND b&gt;10 AND c=9</code>에서 b range 안의 각 b group마다 c가 다시 정렬된다. c=9가 전체 b range에서 하나로 모이지 않으므로 c는 보통 scan 범위를 크게 줄이지 못한다. 단, DB별 skip scan·loose scan·bitmap 전략은 예외가 있으므로 <code>EXPLAIN</code>으로 확인한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">6. 시간·공간·amortized cost와 locality</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">연산</th><th style="padding:7px;border:1px solid #fed7aa">논리 비용</th><th style="padding:7px;border:1px solid #fed7aa">물리 비용</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">point/range seek</td><td style="padding:7px;border:1px solid #fed7aa">O(log<sub>B</sub>N)</td><td style="padding:7px;border:1px solid #fed7aa">root/cache hit 뒤 소수 page read</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">K entry range scan</td><td style="padding:7px;border:1px solid #fed7aa">O(log<sub>B</sub>N+K)</td><td style="padding:7px;border:1px solid #fed7aa">leaf는 sequential, heap TID는 random일 수 있음</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">covering scan</td><td style="padding:7px;border:1px solid #fed7aa">같은 Big-O</td><td style="padding:7px;border:1px solid #fed7aa">heap fetch 제거 가능; 더 큰 leaf와 cache pressure</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">insert/update/delete</td><td style="padding:7px;border:1px solid #fed7aa">보통 O(log<sub>B</sub>N), split amortized</td><td style="padding:7px;border:1px solid #fed7aa">WAL, dirty page, page split, vacuum/compaction</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">M indexes 유지</td><td style="padding:7px;border:1px solid #fed7aa">각 write에 합산</td><td style="padding:7px;border:1px solid #fed7aa">M배에 가까운 maintenance·storage가 가능</td></tr>
+          </table>
+          <p>복잡도는 page fanout B에 의존한다. wide string과 많은 INCLUDE column은 entry를 키워 fanout을 낮추고 tree height·cache miss·split을 늘린다. index scan이 K개의 TID를 찾더라도 heap row가 무작위 page에 흩어지면 locality가 나빠 bitmap/seq scan보다 느릴 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">7. Composite key 순서 결정 flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="padding:12px;background:#fff7ed"><strong>1. query family를 모은다</strong><br>WHERE·JOIN·ORDER BY·GROUP BY·LIMIT·projection과 빈도/p99 기여도</td></tr>
+            <tr><td style="padding:12px;background:#ffedd5"><strong>2. equality prefix를 만든다</strong><br>항상 함께 고정되는 tenant/owner/status 중 workload 공통 선행 열</td></tr>
+            <tr><td style="padding:12px;background:#fff7ed"><strong>3. 첫 range·정렬을 배치한다</strong><br>created_at range와 ORDER BY/LIMIT을 같은 leaf walk로 해결할 수 있는지</td></tr>
+            <tr><td style="padding:12px;background:#ffedd5"><strong>4. payload를 분리한다</strong><br>검색 key가 아닌 출력 열은 INCLUDE/covering 후보, width·update 빈도 확인</td></tr>
+            <tr><td style="padding:12px;background:#fff7ed"><strong>5. 다른 query를 손익 계산한다</strong><br>leading column 없는 질의, 별도 index/bitmap/skip scan/seq scan의 비용</td></tr>
+            <tr><td style="padding:12px;background:#ffedd5"><strong>6. EXPLAIN으로 반증한다</strong><br>estimated/actual rows, buffers, heap fetches, sort, write overhead 비교</td></tr>
+          </table>
+          <p><strong>실무 예:</strong> multi-tenant 최근 주문은 <code>(tenant_id, created_at DESC) INCLUDE (amount,status)</code>가 후보지만, 전체 서비스의 “최근 실패 주문” 질의가 중요하면 별도 partial/index <code>(created_at DESC) WHERE status='FAILED'</code>가 더 적합할 수 있다. 하나의 초대형 index로 모든 질의를 덮으려 하지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">8. 직접 구현: lexicographic lower/upper bound</h2>
+          <div style="padding:14px;background:#292524;color:#ffedd5;border-radius:10px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap"># entries: sorted list of ((tenant_id, created_at, order_id), amount)
+def lower_bound(entries, target):
+    lo, hi = 0, len(entries)
+    while lo &lt; hi:
+        mid = lo + (hi - lo) // 2
+        if entries[mid][0] &lt; target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+def tenant_time_range(entries, tenant, start, end):
+    left = lower_bound(entries, (tenant, start, MIN_ID))
+    right = lower_bound(entries, (tenant, end, MAX_ID))
+    for i in range(left, right):
+        key, payload = entries[i]
+        assert key[0] == tenant and start &lt;= key[1] &lt;= end
+        yield key, payload</div>
+          <p><strong>코드 리뷰 포인트:</strong> overflow 없는 midpoint, inclusive/exclusive boundary, NULL/collation, DESC transform, duplicate tie-breaker, comparator total order를 확인한다. DB index는 concurrent split·MVCC·page latch·recovery까지 더 필요하지만 contiguous interval의 핵심은 같다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">9. 테스트 전략: query 결과와 plan 계약을 분리</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Comparator property:</strong> antisymmetry·transitivity·totality와 DB collation/NULL order를 검사한다.</li>
+            <li><strong>Oracle:</strong> index range 결과를 full scan+sort 결과와 random dataset에서 비교한다.</li>
+            <li><strong>Boundary:</strong> 빈 index, 최소/최대 key, duplicate, 동일 timestamp, NULL, Unicode normalization을 넣는다.</li>
+            <li><strong>Query matrix:</strong> <code>a</code>, <code>a,b</code>, <code>b</code>, <code>a range+c</code>, mixed ORDER BY를 각각 EXPLAIN한다.</li>
+            <li><strong>Distribution:</strong> uniform뿐 아니라 1% hot tenant, correlated country/city, 시간 편향, soft-delete skew를 넣는다.</li>
+            <li><strong>Write path:</strong> insert/update/delete, unique conflict, page split, rollback, crash/restart 후 index-table 일치를 검증한다.</li>
+            <li><strong>Plan regression:</strong> estimated rows와 actual rows 비율, chosen scan, buffers, sort spill, heap fetch를 release마다 비교한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">10. Benchmark: 열은 같아도 순서가 100배를 만든다</h2>
+          <p>CPython 3.9.1의 in-memory SQLite에서 300,000 orders를 만들고 두 covering B-tree <code>idx_tc(tenant_id,created_at)</code>, <code>idx_ct(created_at,tenant_id)</code>를 강제로 비교했다. 9회 중앙값이며 storage·cache가 다른 production 수치로 일반화하지 않는다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">질의/강제 index</th><th style="padding:7px;border:1px solid #fed7aa">planner 범위</th><th style="padding:7px;border:1px solid #fed7aa">중앙값</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">tenant=321 + time range / idx_tc</td><td style="padding:7px;border:1px solid #fed7aa">tenant equality + time range</td><td style="padding:7px;border:1px solid #fed7aa"><strong>0.0199 ms</strong></td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">같은 질의 / idx_ct</td><td style="padding:7px;border:1px solid #fed7aa">time range만 seek, tenant filter</td><td style="padding:7px;border:1px solid #fed7aa"><strong>2.4047 ms</strong></td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">1,000-row time range / idx_tc</td><td style="padding:7px;border:1px solid #fed7aa">ANY(tenant) skip scan</td><td style="padding:7px;border:1px solid #fed7aa">0.5175 ms</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">같은 range / idx_ct</td><td style="padding:7px;border:1px solid #fed7aa">연속 time range</td><td style="padding:7px;border:1px solid #fed7aa">0.0242 ms</td></tr>
+          </table>
+          <p>첫 query에서 올바른 equality prefix가 약 121배 빨랐고, 시간-only query에서는 열 순서가 반대로 유리했다. SQLite는 idx_tc에서 skip scan을 선택했지만 여전히 직접 time range보다 약 21배 느렸다. 결론은 “정답 index 하나”가 아니라 workload 빈도와 SLO에 따라 두 query family의 비용을 합산하는 것이다.</p>
+          <p><strong>Benchmark 주의:</strong> <code>INDEXED BY</code>는 비교를 위한 강제 장치다. 실제 운영에서는 planner가 선택하도록 두고 <code>EXPLAIN ANALYZE</code>, cold/warm cache, on-disk dataset, concurrent writers, realistic LIMIT/result width를 측정한다. microsecond 차이는 timer·CPU scaling noise보다 작을 수 있다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">11. 선택성 추정 실패: 독립 가정의 반례</h2>
+          <p>100만 주소에서 <code>country='KR'</code>가 10%, <code>city='Seoul'</code>이 5%라고 하자. 독립으로 곱하면 둘 다 만족할 확률은 0.5%=5,000행이다. 그러나 Seoul이 전부 KR에 속한다면 실제는 5%=50,000행으로 10배다. 이 오차는 nested-loop와 hash join, index와 seq scan 선택을 뒤집는다.</p>
+          <p>single-column histogram만으로 상관관계를 알 수 없다. PostgreSQL의 extended statistics처럼 dependency·다변량 NDV·MCV를 수집하거나 schema/domain constraint를 활용한다. 통계 생성만 하고 <code>ANALYZE</code>를 빼먹지 않으며, estimate/actual row 비율로 효과를 검증한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">12. Error handling과 안전한 배포</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">실패</th><th style="padding:7px;border:1px solid #fed7aa">처리</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">unique index build 중 duplicate</td><td style="padding:7px;border:1px solid #fed7aa">사전 탐지·정리 정책 합의, build 실패를 무시하지 않기</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">concurrent build 실패/invalid</td><td style="padding:7px;border:1px solid #fed7aa">catalog 상태·재시도 절차 확인, 존재만 보고 배포 성공 판정 금지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">wide key/tuple size 초과</td><td style="padding:7px;border:1px solid #fed7aa">INCLUDE 최소화, hash/expression은 collision·range 상실 검토</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">collation/type mismatch</td><td style="padding:7px;border:1px solid #fed7aa">query expression과 index definition 일치; 암시적 cast 제거</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">stale stats/plan flip</td><td style="padding:7px;border:1px solid #fed7aa">ANALYZE, stats target/extended stats, plan·latency canary</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">index drop 후 회귀</td><td style="padding:7px;border:1px solid #fed7aa">사용 통계만 믿지 말고 shadow/invisible 대안·query replay·rollback 준비</td></tr>
+          </table>
+          <p>대형 index 생성은 disk·WAL·replica lag·lock을 유발한다. free space와 replication headroom을 확인하고 online/concurrent build의 제한을 읽으며, 성공 후 모든 replica의 validity와 plan을 검증한 다음 중복 index를 제거한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">13. Production Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li>slow query 한 건이 아니라 normalized query family, 호출 빈도, 총 DB time, tail SLO로 우선순위를 정한다.</li>
+            <li>equality prefix → 첫 range → ORDER BY/LIMIT → INCLUDE 순으로 후보를 만들되, 실제 plan으로 반증한다.</li>
+            <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>의 estimated/actual rows, loops, heap fetch, sort spill을 함께 본다.</li>
+            <li>correlated columns에는 extended statistics를 고려하고 ANALYZE 주기·sample quality를 관리한다.</li>
+            <li>partial index는 작은 hot subset에 강하지만 query predicate가 index predicate를 함의해야 한다.</li>
+            <li>covering은 read를 줄이지만 모든 출력 열을 넣지 않는다. leaf size, write rate, cache와 MVCC visibility를 측정한다.</li>
+            <li>중복 prefix index 제거는 DB별 planner·unique/FK·ordering·operator class 차이를 검증한 뒤 한다.</li>
+            <li>index마다 owner query, 기대 효과, 생성 이유, 검토/삭제 기준을 기록해 schema debt를 막는다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">14. Anti-pattern과 놓치기 쉬운 것</h2>
+          <ul style="padding-left:22px">
+            <li><strong>선택성이 높은 열을 무조건 먼저:</strong> equality/range/ORDER BY와 query family를 무시한다.</li>
+            <li><strong>WHERE에 나온 열을 모두 key로:</strong> range 뒤 key는 filtering만 하고 index width·write cost만 키울 수 있다.</li>
+            <li><strong>EXPLAIN만 보고 성공:</strong> 추정 plan과 실제 row·buffer·time은 다르다.</li>
+            <li><strong>함수로 column 감싸기:</strong> <code>DATE(created_at)=...</code>가 range seek를 깨뜨릴 수 있다. 명시 range나 expression index를 검토한다.</li>
+            <li><strong>covering이면 항상 index-only:</strong> PostgreSQL 같은 MVCC engine에서는 visibility map 상태에 따라 heap fetch가 남는다.</li>
+            <li><strong>unused index 즉시 drop:</strong> 월말 batch·장애 대응·FK/unique·rare critical query를 놓칠 수 있다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q1. 인덱스 (a,b,c)는 어떤 조건에 효과적인가요?</strong><br>B-tree가 tuple을 lexicographic하게 정렬하므로 선행 equality <code>a=?, b=?</code>와 다음 c range가 하나의 interval을 만든다. a 없이 b/c만 주면 연속 구간이 아니며 full/skip scan이 필요할 수 있다. range 뒤 열은 대개 탐색 범위를 더 못 줄인다. DB별 skip scan은 EXPLAIN으로 확인한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q2. (tenant_id, created_at)와 (created_at, tenant_id) 중 무엇을 고르나요?</strong><br>multi-tenant 최근 N건이면 tenant equality 뒤 time range/order가 유리하다. 전체 시간대 분석이면 반대가 유리하다. query 빈도·result rows·ORDER BY/LIMIT·covering·write 비용을 workload-weighted로 비교하고 실제 row/buffer로 검증한다.</div>
+          <div style="padding:16px;background:#ffedd5;border-radius:10px"><strong>Q3. index가 있는데 seq scan을 고르는 이유는?</strong><br>결과가 많거나 heap fetch locality가 나쁘면 index random I/O가 더 비싸다. stale/correlated stats로 rows를 틀리게 추정했거나 cast/collation 때문에 search key가 아닐 수도 있다. estimated vs actual rows, buffers, SARGability, statistics를 순서대로 본다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>selectivity 0.001과 0.8 중 어느 조건이 더 좁은가?</li>
+            <li><code>(a,b,c)</code>에서 <code>a=1 AND c=9</code>가 한 interval이 아닌 이유는?</li>
+            <li><code>a=1 AND b BETWEEN 10 AND 20 AND c=9</code>에서 c의 역할은?</li>
+            <li>covering index가 heap I/O를 못 없애는 MVCC 상황은?</li>
+            <li>ORDER BY a ASC,b DESC를 일반 (a,b) 양방향 scan으로 해결하기 어려운 이유는?</li>
+            <li>country/city 독립 가정이 cardinality를 틀리는 최소 반례를 계산하라.</li>
+            <li>partial index predicate와 query predicate의 implication이 필요한 이유는?</li>
+            <li>index 두 개 bitmap AND와 composite index의 ordering 차이는?</li>
+            <li>Day 29 B+tree page locality와 오늘 heap random fetch를 연결해 설명하라.</li>
+            <li>Day 32 compaction/WA와 secondary index 추가의 write 비용을 연결하라.</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 34 · 랩: 작은 KV store 설계</strong><br>WAL·memtable·SSTable·Bloom·compaction·index를 하나의 mini KV store에 묶고, Put/Get/Delete/scan의 불변식, crash recovery, fault injection, amplification benchmark를 통합한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://www.postgresql.org/docs/current/indexes-multicolumn.html" style="color:#c2410c">PostgreSQL 18 · Multicolumn Indexes</a> — leading column, skip scan, index 종류별 다중 열 동작.</li>
+            <li><a href="https://www.postgresql.org/docs/current/planner-stats.html" style="color:#c2410c">PostgreSQL 18 · Statistics Used by the Planner</a> — histogram, MCV, correlation과 extended statistics.</li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" style="color:#c2410c">PostgreSQL 18 · Index-Only Scans and Covering Indexes</a> — INCLUDE, visibility map, payload bloat.</li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-bitmap-scans.html" style="color:#c2410c">PostgreSQL 18 · Combining Multiple Indexes</a> — bitmap AND/OR와 ordering 상실.</li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-ordering.html" style="color:#c2410c">PostgreSQL · Indexes and ORDER BY</a> — ASC/DESC, NULL order와 mixed multicolumn ordering.</li>
+            <li><a href="https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html" style="color:#c2410c">MySQL 8.4 · Multiple-Column Indexes</a> — leftmost prefix와 key-part 사용.</li>
+            <li><a href="https://www.sqlite.org/queryplanner.html" style="color:#c2410c">SQLite Query Planning</a> — multi-column, covering, search+sort의 그림과 cost model.</li>
+            <li><a href="https://15445.courses.cs.cmu.edu/spring2026/notes/08-indexes1.pdf" style="color:#c2410c">CMU 15-445/645 · Indexes &amp; Filters I</a> — composite B+tree와 selection condition.</li>
+            <li><a href="https://15445.courses.cs.cmu.edu/spring2025/notes/15-optimization.pdf" style="color:#c2410c">CMU 15-445/645 · Query Planning &amp; Optimization</a> — selectivity와 uniform/independence 가정.</li>
+          </ul>
+          <p style="margin-top:26px;color:#78716c;font-size:12px">세부 planner 동작과 skip scan·index-only 조건은 DBMS와 버전에 따라 다르다. 이 자료의 SQLite 수치는 교육용 단일 환경이며 production 결정은 실제 분포·동시성·disk·MVCC에서 EXPLAIN ANALYZE와 회귀 측정으로 검증한다.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
