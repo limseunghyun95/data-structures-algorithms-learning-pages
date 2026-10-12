@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 35 · 리뷰: database index trade-off</title>
+</head>
+<body style="margin:0;background:#172554;color:#1e293b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#172554">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#f8fafc;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px;background:#3730a3;color:#eef2ff">
+          <div style="color:#c7d2fe;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 5 REVIEW / DAY 35</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">좋은 인덱스는 빠른 구조가 아니라<br>workload에 맞는 비용 계약이다</h1>
+          <p style="margin:0;color:#e0e7ff">B+tree · LSM · hash · Bloom · composite · covering · amplification · 210분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #4f46e5;background:#e0e7ff;border-radius:10px"><strong>한 줄 요약</strong><br>인덱스 선택은 “B-tree냐 LSM이냐” 한 줄 답이 아니라 <strong>필요한 연산, key order, 읽기·쓰기 분포, 결과 cardinality, locality, durability, read/write/space amplification, 운영 SLO</strong>를 먼저 고정하고 구조의 불변식과 실패 비용으로 선택을 반증하는 과정이다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Index</strong></td><td style="padding:7px;border:1px solid #c7d2fe">원본 데이터를 더 적게 읽도록 key→위치/값을 조직한 보조 구조. 조회 이득 대신 write·공간·복구 비용을 낸다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Access method</strong></td><td style="padding:7px;border:1px solid #c7d2fe">B-tree, hash, inverted/GIN, BRIN처럼 index의 연산과 물리 표현을 정의하는 방식.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Primary index</strong></td><td style="padding:7px;border:1px solid #c7d2fe">row의 주된 배치/식별과 강하게 연결된 index. DB마다 clustered 의미가 다르므로 제품 계약을 확인한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Secondary index</strong></td><td style="padding:7px;border:1px solid #c7d2fe">주 저장 순서와 다른 key의 보조 index. entry에서 row/primary key로 한 번 더 찾아갈 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Clustered</strong></td><td style="padding:7px;border:1px solid #c7d2fe">비슷한 index key의 row가 물리적으로 가까운 정도. range locality를 높이지만 보통 한 순서만 선택한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Selectivity</strong></td><td style="padding:7px;border:1px solid #c7d2fe">조건을 통과하는 비율. 낮을수록 좁지만 ORDER BY·covering·locality까지 합쳐야 실제 cost가 된다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Composite index</strong></td><td style="padding:7px;border:1px solid #c7d2fe">여러 열을 하나의 ordered tuple key로 만든 index. 열 순서가 탐색 interval을 결정한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Covering index</strong></td><td style="padding:7px;border:1px solid #c7d2fe">검색과 출력에 필요한 열을 담아 원본 row fetch를 줄이는 index. leaf 폭과 write 비용은 증가한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Cardinality estimate</strong></td><td style="padding:7px;border:1px solid #c7d2fe">optimizer가 예측한 결과 행 수. 통계·상관관계 오차가 access path를 뒤집는다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>B+tree</strong></td><td style="padding:7px;border:1px solid #c7d2fe">높은 fan-out의 page-balanced ordered tree. point·range·order·prefix에 균형 잡힌 선택이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>LSM tree</strong></td><td style="padding:7px;border:1px solid #c7d2fe">write를 WAL+memtable에 모아 immutable sorted run으로 flush·compact하는 구조.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Hash index</strong></td><td style="padding:7px;border:1px solid #c7d2fe">equality lookup에 맞춘 bucket 구조. key order가 없어 range·ORDER BY에는 직접 답하지 못한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Bloom filter</strong></td><td style="padding:7px;border:1px solid #c7d2fe">“확실히 없음/있을 수도 있음”을 답하는 보조 확률 구조. index를 대체하지 않고 불필요한 run I/O를 줄인다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>RA/WA/SA</strong></td><td style="padding:7px;border:1px solid #c7d2fe">사용자 작업 1단위에 대한 read/write/space amplification. 서로 동시에 최소화하기 어렵다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe"><strong>Write stall</strong></td><td style="padding:7px;border:1px solid #c7d2fe">flush/compaction debt가 커져 write를 지연·중단하는 상태. 평균 write가 빨라도 tail SLO를 깨뜨릴 수 있다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">2. 문제·입출력·제약 mental model</h2>
+          <p>“인덱스 추천” 대신 workload를 operation vector로 바꾼다.</p>
+          <div style="padding:14px;background:#172554;color:#e0e7ff;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">W = {
+  point_hit, point_miss, short_range, long_scan,
+  insert, update, delete, batch_ingest,
+  order_by, prefix, uniqueness,
+  key_bytes, value_bytes, hot_set, skew,
+  p99_read_slo, p99_write_slo, durability,
+  memory_budget, disk_budget, rebuild_window
+}</div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#e0e7ff"><th align="left" style="padding:7px;border:1px solid #c7d2fe">질문</th><th align="left" style="padding:7px;border:1px solid #c7d2fe">선택에 미치는 영향</th></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">equality만 필요한가, range/order도 필요한가?</td><td style="padding:7px;border:1px solid #c7d2fe">hash 후보 vs ordered B+tree/LSM</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">write burst인가 sustained인가?</td><td style="padding:7px;border:1px solid #c7d2fe">buffer 흡수와 compaction 처리율·stall 검증</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">결과 행과 row locality는?</td><td style="padding:7px;border:1px solid #c7d2fe">index lookup 후 random heap fetch vs scan</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">negative lookup 비율은?</td><td style="padding:7px;border:1px solid #c7d2fe">Bloom bits/key와 cache 우선순위</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">update가 indexed column을 자주 바꾸는가?</td><td style="padding:7px;border:1px solid #c7d2fe">secondary maintenance·page split·compaction WA</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">장애 시 재생·재구축 허용 시간은?</td><td style="padding:7px;border:1px solid #c7d2fe">WAL/checkpoint, checksum, online rebuild, replica 전략</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">3. Architecture/decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:35%;padding:12px;background:#4f46e5;color:#fff;border-radius:8px"><strong>① Contract</strong></td><td style="padding:12px;background:#e0e7ff">equality/range/order/prefix/unique/snapshot/durability 정의</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4f46e5;font-weight:800">↓ hard requirement로 불가능한 후보 제거</td></tr>
+            <tr><td style="padding:12px;background:#4338ca;color:#fff;border-radius:8px"><strong>② Cost</strong></td><td style="padding:12px;background:#e0e7ff">빈도×p50/p99×RA/WA/SA×memory×운영 비용 계산</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4f46e5;font-weight:800">↓ composite/covering/Bloom/compaction 구체화</td></tr>
+            <tr><td style="padding:12px;background:#3730a3;color:#fff;border-radius:8px"><strong>③ Prove</strong></td><td style="padding:12px;background:#e0e7ff">ordering·visibility·latest-version·uniqueness RI와 반례 확인</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4f46e5;font-weight:800">↓ representative data + adversarial skew + failure test</td></tr>
+            <tr><td style="padding:12px;background:#312e81;color:#fff;border-radius:8px"><strong>④ Measure</strong></td><td style="padding:12px;background:#e0e7ff">actual rows, buffers, cache, bytes, compaction debt, stall, recovery time</td></tr>
+            <tr><td align="center" colspan="2" style="color:#4f46e5;font-weight:800">↓ canary·rollback·continuous review</td></tr>
+            <tr><td style="padding:12px;background:#1e1b4b;color:#fff;border-radius:8px"><strong>⑤ Operate</strong></td><td style="padding:12px;background:#e0e7ff">stats refresh, bloat/WA, disk headroom, rebuild, ownership 관리</td></tr>
+          </table>
+          <p>선택은 층별이다. SQL query의 secondary B-tree와 storage engine의 LSM은 서로 배타적이지 않다. LSM 기반 engine 위에 composite secondary index가 있을 수 있고, 각 SST에 Bloom이 붙을 수 있다. “하나의 최강 index”가 아니라 <strong>각 층이 어떤 amplification을 줄이고 어디에 새 비용을 만드는지</strong> 설명한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">4. Ordered Index ADT와 공통 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>insert/delete</code>, <code>find(key)</code>, <code>lowerBound(key)</code>, <code>scan(lo,hi)</code>, 선택적으로 <code>findAt(snapshot)</code>, <code>uniqueInsert</code>. 구현은 B+tree page일 수도, 여러 SST의 merge view일 수도 있다.</p>
+          <ol style="padding-left:22px">
+            <li>모든 writer와 reader가 같은 total comparator, collation, NULL, encoding 계약을 쓴다.</li>
+            <li>logical live row마다 필요한 index entry가 있으며 삭제/이전 version의 visibility가 engine 계약과 일치한다.</li>
+            <li>ordered scan은 comparator 순서와 정확한 inclusive/exclusive boundary를 보존한다.</li>
+            <li>duplicate key가 허용되면 row identity/sequence가 stable tie-breaker가 된다.</li>
+            <li>UNIQUE는 허용된 NULL semantics와 snapshot/transaction 범위에서 live duplicate가 없다.</li>
+            <li>covering payload는 search key와 구분되고 원본 row version과 일관된다.</li>
+            <li>crash 뒤 durable metadata가 참조하는 node/file은 완전하며 checksum·page invariant를 만족한다.</li>
+          </ol>
+          <p><strong>B+tree 추가 RI:</strong> page occupancy 범위, separator가 child range를 정확히 나눔, 모든 leaf depth 동일, leaf chain 정렬.<br><strong>LSM 추가 RI:</strong> sequence 최신 우선, tombstone이 old value를 가림, 각 run 정렬·immutable, level overlap 규칙, manifest가 live file set을 원자적으로 정의.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">5. 정당성: 연산 계약으로 후보를 제거한다</h2>
+          <p><strong>명제:</strong> comparator 순서의 range <code>[L,U)</code>를 출력해야 한다면 순서를 보존하지 않는 순수 hash index 하나로는 결과를 key order로 직접 생성할 수 없다. Hash bucket은 key order 정보를 보존하지 않으므로 모든 후보를 수집해 정렬하거나 별도 ordered structure가 필요하다. 따라서 range/order가 hard requirement면 hash-only 후보를 제거한다.</p>
+          <p><strong>Composite B-tree:</strong> <code>(a,b,c)</code>의 사전식 순서에서 선행 equality <code>a=A,b=B</code>가 고정되면 c range는 하나의 연속 interval이다. 중간 b가 빠지면 c 값은 b group마다 흩어져 하나의 좁은 interval이 아니다.</p>
+          <p><strong>LSM Get:</strong> snapshot 이하 최대 sequence의 version을 선택하면 된다. memtable과 overlapping run을 newest-to-oldest로 검사하고 Bloom negative만 건너뛰며 tombstone도 version으로 처리하면 old value 부활을 막는다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>최소 반례 모음</strong><br>① range query에 hash-only: 2와 100이 어느 bucket 순서인지 알 수 없어 ordered result를 직접 못 만든다.<br>② “가장 selective 열 먼저”: <code>(created_at,tenant)</code>는 tenant별 최근 50건에서 넓은 시간대를 훑을 수 있다.<br>③ Bloom positive=존재: false positive 하나가 NOT_FOUND여야 할 key를 존재로 오답 처리한다.<br>④ tombstone 조기 GC: lower run의 old value가 다시 보인다.<br>⑤ covering 과다: leaf entry가 커져 fan-out·cache hit가 낮아지고 write가 더 비싸진다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">6. 구조별 cost model</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#e0e7ff"><th style="padding:6px;border:1px solid #c7d2fe">구조</th><th style="padding:6px;border:1px solid #c7d2fe">강점</th><th style="padding:6px;border:1px solid #c7d2fe">주 비용/실패</th><th style="padding:6px;border:1px solid #c7d2fe">대표 선택</th></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe"><strong>B+tree</strong></td><td style="padding:6px;border:1px solid #c7d2fe">point O(log<sub>B</sub>N), range O(log<sub>B</sub>N+K), order</td><td style="padding:6px;border:1px solid #c7d2fe">random page write, split, latch, bloat</td><td style="padding:6px;border:1px solid #c7d2fe">OLTP mixed read/range, SQL secondary</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe"><strong>LSM</strong></td><td style="padding:6px;border:1px solid #c7d2fe">sequential batched write, high ingest</td><td style="padding:6px;border:1px solid #c7d2fe">RA/WA/SA, compaction, stall</td><td style="padding:6px;border:1px solid #c7d2fe">write-heavy KV/time series/storage engine</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe"><strong>Hash</strong></td><td style="padding:6px;border:1px solid #c7d2fe">expected O(1) equality</td><td style="padding:6px;border:1px solid #c7d2fe">range/order 불가, collision/resize</td><td style="padding:6px;border:1px solid #c7d2fe">equality-only hot lookup</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe"><strong>BRIN/zone map</strong></td><td style="padding:6px;border:1px solid #c7d2fe">매우 작은 summary, append correlation</td><td style="padding:6px;border:1px solid #c7d2fe">false range hit, random distribution</td><td style="padding:6px;border:1px solid #c7d2fe">거대 append-only table의 시간 범위</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe"><strong>Inverted/GIN</strong></td><td style="padding:6px;border:1px solid #c7d2fe">token/array/JSON containment</td><td style="padding:6px;border:1px solid #c7d2fe">posting list·update·merge 비용</td><td style="padding:6px;border:1px solid #c7d2fe">full text, tags, multi-valued field</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe"><strong>Bloom</strong></td><td style="padding:6px;border:1px solid #c7d2fe">negative lookup I/O skip</td><td style="padding:6px;border:1px solid #c7d2fe">memory, hash CPU, false positive</td><td style="padding:6px;border:1px solid #c7d2fe">LSM/SST 보조 filter</td></tr>
+          </table>
+          <p>같은 Big-O도 다르다. B+tree의 log는 page fan-out 기반이고 상단 page가 cache되면 물리 I/O는 적다. LSM point read는 run 후보 수·Bloom·block cache에 좌우된다. Hash O(1)은 adversarial collision, resize pause, locality가 빠진 expected cost다. 공간은 entry bytes뿐 아니라 allocator, page slack, Bloom/index block, old version, compaction 임시 output을 포함한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">7. B+tree vs LSM: 질문별 방어</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#e0e7ff"><th style="padding:7px;border:1px solid #c7d2fe">축</th><th style="padding:7px;border:1px solid #c7d2fe">B+tree 경향</th><th style="padding:7px;border:1px solid #c7d2fe">LSM 경향</th></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">foreground write</td><td style="padding:7px;border:1px solid #c7d2fe">target page update/split</td><td style="padding:7px;border:1px solid #c7d2fe">WAL+memtable, 순차 flush</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">point read</td><td style="padding:7px;border:1px solid #c7d2fe">한 root-to-leaf path</td><td style="padding:7px;border:1px solid #c7d2fe">memtable+run, Bloom/cache로 prune</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">range scan</td><td style="padding:7px;border:1px solid #c7d2fe">leaf chain sequential</td><td style="padding:7px;border:1px solid #c7d2fe">여러 run k-way merge·version skip</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">background work</td><td style="padding:7px;border:1px solid #c7d2fe">vacuum/rebalance/checkpoint 제품 의존</td><td style="padding:7px;border:1px solid #c7d2fe">flush/compaction가 지속 throughput 결정</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">space peak</td><td style="padding:7px;border:1px solid #c7d2fe">page slack·MVCC/bloat</td><td style="padding:7px;border:1px solid #c7d2fe">old run+new output 동시 존재</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">tail risk</td><td style="padding:7px;border:1px solid #c7d2fe">split/latch/random I/O</td><td style="padding:7px;border:1px solid #c7d2fe">compaction debt/write stall</td></tr>
+          </table>
+          <p>“write-heavy라 LSM”도 충분하지 않다. ingest가 200MB/s인데 실제 compaction throughput이 WA를 포함해 150MB/s라면 backlog는 무한히 증가한다. 반대로 read-heavy라도 working set이 cache되고 Bloom negative가 많으면 LSM이 충분할 수 있다. <strong>sustained</strong> 처리율과 p99를 측정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">8. Composite·covering 설계 flow</h2>
+          <ol style="padding-left:22px">
+            <li>normalized query family와 빈도·총 DB time·tail SLO를 모은다.</li>
+            <li>항상 고정되는 equality columns로 선행 prefix 후보를 만든다.</li>
+            <li>첫 range와 ORDER BY/LIMIT을 같은 연속 interval/scan으로 만족시킨다.</li>
+            <li>duplicate·NULL·collation·DESC를 포함한 comparator와 uniqueness 범위를 명시한다.</li>
+            <li>출력 열은 INCLUDE/covering 후보지만 width·update 빈도·visibility check를 계산한다.</li>
+            <li>다른 query family의 leading-column gap, 별도 index, bitmap/skip scan, seq scan 비용을 합산한다.</li>
+            <li>estimated/actual rows, buffers, sort, heap fetch, write WAL, index bytes를 before/after 비교한다.</li>
+          </ol>
+          <p><strong>선택성만으로 정렬하지 않는다.</strong> tenant별 최근 50건은 <code>(tenant_id, created_at DESC)</code>가 tenant equality→time order→LIMIT early stop을 한 leaf walk로 묶는다. 전역 time 분석이 중요하면 <code>(created_at, tenant_id)</code> 또는 별도 index가 필요하다. 두 query를 하나의 지나치게 넓은 index로 덮으면 cache와 write 비용이 커진다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">9. 직접 구현: constraint-first decision record</h2>
+          <div style="padding:14px;background:#172554;color:#e0e7ff;border-radius:10px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">def shortlist(workload):
+    candidates = {"btree", "lsm", "hash"}
+    if workload.range_ratio &gt; 0 or workload.order_required:
+        candidates.discard("hash")
+    if workload.prefix_search:
+        require_total_order_and_prefix_compatible_encoding()
+    if workload.unique:
+        require_atomic_conflict_check_under_concurrency()
+    return candidates
+
+def decision_record(W, measurements):
+    C = shortlist(W)
+    return min(C, key=lambda c:
+        W.point * measurements[c].point_p99 +
+        W.scan  * measurements[c].scan_p99 +
+        W.write * measurements[c].write_p99 +
+        penalty_if(measurements[c].wa &gt; W.max_wa) +
+        penalty_if(measurements[c].space_peak &gt; W.disk_budget) +
+        penalty_if(measurements[c].recovery &gt; W.rto))
+
+# 숫자는 vendor 기본값이 아니라 우리 dataset·hardware·concurrency의 실측값이어야 한다.
+# hard constraint 위반은 작은 가중치가 아니라 후보 제거 또는 무한 penalty다.</div>
+          <p>구현 포인트는 “점수표가 정답”이 아니라 decision record의 재현성이다. workload version, data distribution, engine version, configuration, hardware, cold/warm phase, concurrency, 결과 검증을 같이 저장한다. 가중치가 10% 바뀌어 선택이 뒤집히면 결론이 민감하므로 dual benchmark/canary가 필요하다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">10. 테스트와 benchmark 설계</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#e0e7ff"><th align="left" style="padding:7px;border:1px solid #c7d2fe">검증층</th><th align="left" style="padding:7px;border:1px solid #c7d2fe">질문</th></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">correctness</td><td style="padding:7px;border:1px solid #c7d2fe">full scan/reference map과 point/range/order/duplicate/snapshot 결과가 같은가?</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">distribution</td><td style="padding:7px;border:1px solid #c7d2fe">uniform 외 hot key, correlated columns, monotonic insert, delete/update churn을 넣었는가?</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">phase</td><td style="padding:7px;border:1px solid #c7d2fe">warm-up, steady state, compaction/vacuum, restart/cold cache를 분리했는가?</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">concurrency</td><td style="padding:7px;border:1px solid #c7d2fe">reader/writer 수와 connection/queue/backpressure가 production과 같은가?</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">tail</td><td style="padding:7px;border:1px solid #c7d2fe">p50만 아니라 p95/p99/max, stall seconds, timeout/error rate를 기록했는가?</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">resources</td><td style="padding:7px;border:1px solid #c7d2fe">logical/physical reads, bytes written, WA, cache hit, CPU, RSS, disk peak를 기록했는가?</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">failure</td><td style="padding:7px;border:1px solid #c7d2fe">kill, ENOSPC, checksum, rebuild, replica lag, restore RTO를 측정했는가?</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">11. 누적 실측 리뷰: 숫자가 말하는 선택 조건</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#e0e7ff"><th style="padding:6px;border:1px solid #c7d2fe">실험</th><th style="padding:6px;border:1px solid #c7d2fe">결과</th><th style="padding:6px;border:1px solid #c7d2fe">선택 교훈</th></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe">Day 29 B+tree fan-out</td><td style="padding:6px;border:1px solid #c7d2fe">order 8/64/256 높이 7/3/3, lookup 187.726/114.571/117.940ms</td><td style="padding:6px;border:1px solid #c7d2fe">fan-out 이득 뒤에는 넓은 node search/cache trade-off</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe">Day 30 LSM</td><td style="padding:6px;border:1px solid #c7d2fe">29→1 run, Get 517.125→60.999ms; batch write 25.075ms</td><td style="padding:6px;border:1px solid #c7d2fe">write buffering 이득은 compaction/RA 비용을 미래로 이동</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe">Day 31 Bloom</td><td style="padding:6px;border:1px solid #c7d2fe">10 bits/key FPR 0.008336, false negative 0</td><td style="padding:6px;border:1px solid #c7d2fe">negative-heavy read에서 run I/O를 memory+CPU로 교환</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe">Day 33 composite</td><td style="padding:6px;border:1px solid #c7d2fe">tenant+time 0.0199ms vs 반대 순서 2.4047ms</td><td style="padding:6px;border:1px solid #c7d2fe">같은 열도 query interval을 만드는 순서가 핵심</td></tr>
+            <tr><td style="padding:6px;border:1px solid #c7d2fe">Day 34 mini KV</td><td style="padding:6px;border:1px solid #c7d2fe">20→1 run, probe 4.509→1.000, Get 217.901→58.525ms</td><td style="padding:6px;border:1px solid #c7d2fe">compaction은 read 이득을 위해 foreground와 disk 비용 지불</td></tr>
+          </table>
+          <p>이 숫자들은 서로 다른 synthetic harness라 절대값을 직접 비교할 수 없다. 같은 날 같은 workload 안의 상대 비교만 해석한다. 결론은 구조의 이름이 아니라 <strong>관측한 변화의 원인</strong>—page visits, run probes, FPR, interval 폭, merge bytes—으로 설명한다.</p>
+          <p><strong>Benchmark 주의:</strong> in-memory Python/SQLite와 production DB의 storage·locking·compression은 다르다. cache를 비우지 않은 microbenchmark를 disk 성능이라고 부르지 않고, 강제 index 결과를 optimizer 기본 선택으로 일반화하지 않는다. 데이터 생성·query 결과·config·commit SHA를 함께 보존한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">12. Error handling과 migration</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#e0e7ff"><th style="padding:7px;border:1px solid #c7d2fe">실패</th><th style="padding:7px;border:1px solid #c7d2fe">대응</th></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">online build 실패/invalid</td><td style="padding:7px;border:1px solid #c7d2fe">catalog validity와 replica별 상태를 확인; 이름 존재만으로 성공 판정 금지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">unique duplicate</td><td style="padding:7px;border:1px solid #c7d2fe">사전 탐지·정리 규칙·동시 write conflict window를 명시</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">disk/WAL 폭증</td><td style="padding:7px;border:1px solid #c7d2fe">headroom·replica lag·backup impact를 canary에서 관찰하고 throttle</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">plan regression</td><td style="padding:7px;border:1px solid #c7d2fe">estimated/actual rows·buffers 비교, stats refresh, rollback index 유지</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">checksum/corruption</td><td style="padding:7px;border:1px solid #c7d2fe">silent skip 금지; range/file 식별, replica/backup repair, 재검증</td></tr>
+            <tr><td style="padding:7px;border:1px solid #c7d2fe">index drop 후 rare query 장애</td><td style="padding:7px;border:1px solid #c7d2fe">월말/장애 query replay, hide/invisible 대안, 단계적 drop과 rollback</td></tr>
+          </table>
+          <p>추가와 삭제 모두 migration이다. build 전 예상 bytes·WAL·I/O·lock을 계산하고, canary→전체 build→validity→plan/latency→replica→관찰 기간 순으로 진행한다. 중복 index 제거도 unique/FK/operator class/order/predicate가 정말 같은지 확인한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">13. Production Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li>index마다 owner query family, 기대 SLO, 생성 이유, 측정 baseline, review/drop 기준을 기록한다.</li>
+            <li>optimizer 통계와 실제 분포를 관리하고 correlated columns에는 extended/multivariate stats를 검토한다.</li>
+            <li>covering은 hot stable query에 제한하고 leaf width, cache, update/WAL, MVCC heap fetch를 함께 본다.</li>
+            <li>LSM은 RA/WA/SA와 L0 files, pending compaction bytes, stall seconds, disk peak를 함께 alert한다.</li>
+            <li>Bloom bits/key는 negative lookup 비율·SST 수·memory budget·FPR 목표로 결정하고 false negative 0을 검증한다.</li>
+            <li>hot key/tenant skew를 별도 dimension으로 계측해 평균 cardinality가 숨기는 partition·latch 병목을 찾는다.</li>
+            <li>write throughput은 foreground 성공률뿐 아니라 compaction/vacuum이 따라잡는 steady state에서 평가한다.</li>
+            <li>schema/format 변경은 backup·restore drill, checksum scan, rolling compatibility, rollback을 포함한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">14. Anti-pattern</h2>
+          <ul style="padding-left:22px">
+            <li><strong>WHERE 열마다 single-column index:</strong> AND/ORDER BY를 하나의 interval로 못 묶고 maintenance만 늘 수 있다.</li>
+            <li><strong>selectivity 높은 열 무조건 선두:</strong> equality prefix, range, LIMIT, ordering을 무시한다.</li>
+            <li><strong>index가 있으면 빠름:</strong> 결과가 많고 heap locality가 나쁘면 seq scan이 더 싸다.</li>
+            <li><strong>write-heavy=LSM:</strong> compaction 처리율·disk headroom·read SLO 없이 결정한다.</li>
+            <li><strong>Bloom=cache 또는 존재 증명:</strong> payload를 저장하지 않으며 positive는 확정 답이 아니다.</li>
+            <li><strong>평균 latency만 비교:</strong> split·compaction·checkpoint가 만드는 p99와 timeout을 놓친다.</li>
+            <li><strong>benchmark에 결과 검증 없음:</strong> 빠르게 틀린 query/손실된 write를 성공으로 측정한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#e0e7ff;border-radius:10px"><strong>Q1. B+tree와 LSM 중 무엇을 선택하나요?</strong><br>point/range/order/write 비율, sustained ingest, p99, RA/WA/SA, memory/disk, recovery를 먼저 수치화한다. B+tree는 한 ordered page path와 range locality가 강하고 LSM은 foreground sequential write가 강하지만 compaction·run read 비용이 있다. Bloom/cache/compaction style을 포함한 실제 steady-state benchmark로 결정한다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#e0e7ff;border-radius:10px"><strong>Q2. composite index 열 순서를 어떻게 정하나요?</strong><br>query family의 equality prefix→첫 range/ORDER BY→LIMIT early stop→필요 payload 순으로 후보를 만든다. 전역 distinct 수만 보지 않는다. 다른 query family의 leading gap과 write/leaf width를 합산하고 EXPLAIN actual rows·buffers로 반증한다.</div>
+          <div style="padding:16px;background:#e0e7ff;border-radius:10px"><strong>Q3. 인덱스를 추가했는데 더 느려질 수 있는 이유는?</strong><br>모든 write가 추가 structure와 WAL을 유지하고 cache working set이 커지며 page split/compaction가 늘어난다. covering 과다로 fan-out이 낮아질 수 있고 stale stats가 나쁜 plan을 고를 수도 있다. read 이득과 write·space·tail·운영 비용을 before/after로 본다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>range/order가 hard requirement면 hash-only를 제거할 수 있는 이유는?</li>
+            <li>B+tree의 O(log N)보다 O(log<sub>B</sub>N) 관점이 storage에서 중요한 이유는?</li>
+            <li>LSM의 빠른 foreground write가 미래에 만드는 세 비용은?</li>
+            <li>Bloom 10 bits/key가 모든 workload에 최적이 아닌 이유는?</li>
+            <li><code>(tenant,time)</code>과 <code>(time,tenant)</code>가 각각 유리한 query를 하나씩 써라.</li>
+            <li>covering index가 index-only scan을 항상 보장하지 않는 MVCC 이유는?</li>
+            <li>leveled와 tiered compaction의 RA/WA/SA 방향을 설명하라.</li>
+            <li>optimizer의 estimated rows와 actual rows가 100배 다를 때 조사 순서는?</li>
+            <li>index migration에서 HTTP/API 성공 같은 단일 성공 신호가 부족한 이유는?</li>
+            <li>Day 29~34의 각 실험을 하나의 decision record로 묶어라.</li>
+          </ol>
+          <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>다음 Day 36 · stable/in-place/adaptive 정렬 속성</strong><br>정렬을 “O(n log n)” 하나로 비교하지 않고 stability, extra space, adaptiveness, worst case, comparator·memory locality·external sort 요구로 분해한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#4338ca">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://www.postgresql.org/docs/current/indexes-types.html" style="color:#4338ca">PostgreSQL 18 · Index Types</a> — B-tree, Hash, GiST, SP-GiST, GIN, BRIN의 operator/workload 범위.</li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-multicolumn.html" style="color:#4338ca">PostgreSQL 18 · Multicolumn Indexes</a> — leading column, skip scan, access method별 다중 열 동작.</li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" style="color:#4338ca">PostgreSQL 18 · Index-Only Scans</a> — INCLUDE payload, visibility map과 covering trade-off.</li>
+            <li><a href="https://www.sqlite.org/queryplanner.html" style="color:#4338ca">SQLite · Query Planning</a> — multi-column, covering, search+sort와 cost-based planner.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Overview" style="color:#4338ca">RocksDB Overview</a> — SST, compaction style과 read/write/space trade-off.</li>
+            <li><a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide" style="color:#4338ca">RocksDB Tuning Guide</a> — RA/WA/SA 정의와 resource/compaction 관측.</li>
+            <li><a href="https://db.cs.berkeley.edu/cs286/papers/lsm-acta1996.pdf" style="color:#4338ca">O'Neil et al. · The Log-Structured Merge-Tree</a> — LSM의 원 논문과 merge cost model.</li>
+          </ul>
+          <p style="margin-top:26px;padding-top:18px;border-top:1px solid #cbd5e1;color:#64748b;font-size:12px">리뷰 체크: workload vector 작성 → hard constraint로 shortlist → RI/최소 반례 → steady-state benchmark → RA/WA/SA와 p99 → canary·rollback·owner 기록.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

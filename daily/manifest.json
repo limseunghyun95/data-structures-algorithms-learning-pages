@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-10-11T14:52:25+09:00",
+  "updatedAt": "2026-10-12T09:18:23+09:00",
   "lessons": [
     {
       "day": 1,
@@ -311,6 +311,15 @@
       "path": "day-34.html",
       "kind": "lab",
       "publishedAt": "2026-10-11T14:52:25+09:00"
+    },
+    {
+      "day": 35,
+      "week": 5,
+      "title": "리뷰: database index trade-off",
+      "summary": "B+tree·LSM·hash·Bloom·composite·covering을 workload 계약과 공통 불변식으로 묶고, locality·RA/WA/SA·p99·복구·운영 비용까지 선택 근거로 방어합니다.",
+      "path": "day-35.html",
+      "kind": "review",
+      "publishedAt": "2026-10-12T09:18:23+09:00"
     }
   ]
 }
