@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-10-12T09:18:23+09:00",
+  "updatedAt": "2026-10-13T09:01:03+09:00",
   "lessons": [
     {
       "day": 1,
@@ -320,6 +320,15 @@
       "path": "day-35.html",
       "kind": "review",
       "publishedAt": "2026-10-12T09:18:23+09:00"
+    },
+    {
+      "day": 36,
+      "week": 6,
+      "title": "stable/in-place/adaptive 정렬 속성",
+      "summary": "정렬을 stable·in-place·adaptive·worst-case·move/locality의 독립 축으로 분해하고, comparator 계약·정당성·분포별 benchmark·production 선택까지 연결합니다.",
+      "path": "day-36.html",
+      "kind": "lesson",
+      "publishedAt": "2026-10-13T09:01:03+09:00"
     }
   ]
 }
