@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 37 · insertion, selection, bubble의 교육적 의미</title>
+</head>
+<body style="margin:0;background:#1f2937;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#1f2937">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffdf7;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px;background:#a16207;color:#fffbeb">
+          <div style="color:#fde68a;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 6 / DAY 37</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">셋 다 O(n²)이지만<br>가르쳐 주는 비용은 서로 다르다</h1>
+          <p style="margin:0;color:#fef3c7">insertion · selection · bubble · invariant · exact cost · small-N · 200분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #d97706;background:#fef3c7;border-radius:10px"><strong>한 줄 요약</strong><br>Insertion·selection·bubble sort는 모두 최악 Θ(n²)이지만, insertion은 <strong>inversion에 적응하고 online·stable</strong>, selection은 <strong>비교 수가 고정되지만 swap이 O(n)</strong>, bubble은 <strong>adjacent swap 하나가 inversion 하나를 제거</strong>해 정당성과 비용을 가장 투명하게 보여준다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Elementary sort</strong></td><td style="padding:7px;border:1px solid #fde68a">짧고 직접적인 기본 정렬. 큰 random 입력에는 느리지만 invariant와 cost model 학습에 좋다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Prefix / suffix</strong></td><td style="padding:7px;border:1px solid #fde68a">배열의 앞 연속 구간 / 뒤 연속 구간. 세 알고리즘의 loop invariant 경계를 표현한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Insertion</strong></td><td style="padding:7px;border:1px solid #fde68a">정렬된 prefix에 다음 원소를 올바른 위치로 끼워 넣는 과정.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Selection</strong></td><td style="padding:7px;border:1px solid #fde68a">미정렬 suffix에서 최솟값 하나를 골라 경계 앞으로 보내는 과정.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Bubble</strong></td><td style="padding:7px;border:1px solid #fde68a">인접한 역전 쌍을 swap해 큰 값이 오른쪽 끝으로 이동하게 하는 과정.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Inversion</strong></td><td style="padding:7px;border:1px solid #fde68a"><code>i&lt;j</code>인데 <code>A[i]&gt;A[j]</code>인 쌍. 0이면 정렬 완료다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Loop invariant</strong></td><td style="padding:7px;border:1px solid #fde68a">반복 전후 항상 참인 명제. initialization·maintenance·termination으로 정당성을 증명한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Comparison</strong></td><td style="padding:7px;border:1px solid #fde68a">두 key의 순서를 묻는 연산. comparator가 비싸면 지배 비용이 된다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Swap / write</strong></td><td style="padding:7px;border:1px solid #fde68a">두 위치 교환 / 배열 슬롯 기록. 큰 record·flash·remote object에서는 비교보다 비쌀 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Stable</strong></td><td style="padding:7px;border:1px solid #fde68a">equal key record의 입력 상대 순서를 보존하는 성질.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Adaptive</strong></td><td style="padding:7px;border:1px solid #fde68a">이미 정렬된 정도가 높을수록 일을 덜 하는 성질.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Online</strong></td><td style="padding:7px;border:1px solid #fde68a">원소가 하나씩 도착할 때 지금까지의 결과를 갱신할 수 있는 성질.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Sentinel</strong></td><td style="padding:7px;border:1px solid #fde68a">경계 검사를 줄이기 위해 넣는 특별 값. 도메인과 충돌하지 않는다는 계약이 필요하다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Cutoff</strong></td><td style="padding:7px;border:1px solid #fde68a">큰 정렬이 작은 partition/run에서 elementary sort로 전환하는 크기 임계값.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">2. 문제·입출력·제약 mental model</h2>
+          <div style="padding:14px;background:#292524;color:#fef3c7;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">Input:  A[0..n), comparator cmp
+Output: 같은 원소의 sorted permutation
+Cost:   comparisons C + writes W + extra bytes M
+
+질문:
+- n이 8인가, 8백만인가?
+- inversion I가 작은가?
+- stable이 필요한가?
+- 비교와 이동 중 무엇이 더 비싼가?
+- 원소가 스트림으로 하나씩 도착하는가?</div>
+          <p>Big-O만 보면 세 알고리즘은 같은 칸에 들어간다. 그러나 n=32의 base case, 거의 정렬된 UI row, write가 매우 비싼 storage, invariant 교육에서는 정확한 비교·이동 수가 선택을 바꾼다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#fef3c7"><th style="padding:7px;border:1px solid #fde68a">요구</th><th style="padding:7px;border:1px solid #fde68a">후보</th><th style="padding:7px;border:1px solid #fde68a">이유</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">small + nearly sorted + stable</td><td style="padding:7px;border:1px solid #fde68a">Insertion</td><td style="padding:7px;border:1px solid #fde68a">Θ(n+I), shift만 수행</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">write/swap가 극도로 비쌈</td><td style="padding:7px;border:1px solid #fde68a">Selection을 교육적 후보로 측정</td><td style="padding:7px;border:1px solid #fde68a">비교는 Θ(n²), swap≤n−1</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">inversion과 adjacent repair 이해</td><td style="padding:7px;border:1px solid #fde68a">Bubble</td><td style="padding:7px;border:1px solid #fde68a">swap 수=I, 증명 투명</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">large general input</td><td style="padding:7px;border:1px solid #fde68a">셋 다 단독 후보 아님</td><td style="padding:7px;border:1px solid #fde68a">merge/introsort/Timsort/radix 검토</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">3. Architecture/decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:35%;padding:12px;background:#d97706;color:#fff;border-radius:8px"><strong>① Contract</strong></td><td style="padding:12px;background:#fef3c7">sorted permutation · stable · online · error semantics</td></tr>
+            <tr><td align="center" colspan="2" style="color:#d97706;font-weight:800">↓ n과 disorder I, key/record width</td></tr>
+            <tr><td style="padding:12px;background:#b45309;color:#fff;border-radius:8px"><strong>② Cost axis</strong></td><td style="padding:12px;background:#fef3c7">comparison·write·swap·branch·cache·temp memory</td></tr>
+            <tr><td align="center" colspan="2" style="color:#d97706;font-weight:800">↓ 큰 문제? hybrid의 작은 run?</td></tr>
+            <tr><td style="padding:12px;background:#92400e;color:#fff;border-radius:8px"><strong>③ Candidate</strong></td><td style="padding:12px;background:#fef3c7">Insertion / Selection / Bubble / non-quadratic</td></tr>
+            <tr><td align="center" colspan="2" style="color:#d97706;font-weight:800">↓ invariant·property test·최소 반례</td></tr>
+            <tr><td style="padding:12px;background:#78350f;color:#fff;border-radius:8px"><strong>④ Measure</strong></td><td style="padding:12px;background:#fef3c7">5개 분포에서 C/W/time/p99, 결과 oracle</td></tr>
+            <tr><td align="center" colspan="2" style="color:#d97706;font-weight:800">↓ threshold와 fallback 기록</td></tr>
+            <tr><td style="padding:12px;background:#451a03;color:#fff;border-radius:8px"><strong>⑤ Deploy</strong></td><td style="padding:12px;background:#fef3c7">input cap·cancellation·observability·regression</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">4. Sorting ADT와 공통 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>sort(A,cmp)</code>는 A와 동일한 identity multiset을 comparator 순서로 배치한다. stable이 계약이면 equal-key의 original index도 결과 조건이다.</p>
+          <ol style="padding-left:22px">
+            <li>모든 시점에 배열은 입력 identity의 permutation이다. 소실·복제·satellite 분리는 없다.</li>
+            <li>comparator는 정렬 도중 변하지 않고 strict weak/total order 계약을 지킨다.</li>
+            <li>각 알고리즘의 sorted boundary 밖은 아직 미정이지만 boundary 안 invariant는 항상 참이다.</li>
+            <li>stable 구현은 equal key를 swap/shift하지 않거나 original order를 명시적으로 tie-break한다.</li>
+            <li>범위 정렬이면 대상 밖 원소는 그대로이고 size/index arithmetic은 overflow하지 않는다.</li>
+          </ol>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#fef3c7"><th style="padding:7px;border:1px solid #fde68a">알고리즘</th><th style="padding:7px;border:1px solid #fde68a">outer-loop invariant</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Insertion</strong></td><td style="padding:7px;border:1px solid #fde68a">반복 i 시작 시 <code>A[0:i)</code>는 원래 prefix의 stable sorted permutation.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Selection</strong></td><td style="padding:7px;border:1px solid #fde68a">반복 i 시작 시 <code>A[0:i)</code>는 전체에서 가장 작은 i개이며 정렬됨.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a"><strong>Bubble</strong></td><td style="padding:7px;border:1px solid #fde68a">한 pass 뒤 마지막 위치에는 현재 구간의 최댓값; 확정 suffix는 정렬되고 나머지보다 크거나 같음.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">5. 정당성 증명 ① Insertion</h2>
+          <p><strong>Initialization:</strong> 길이 1 prefix는 정렬됐다. <strong>Maintenance:</strong> x보다 큰 prefix suffix만 오른쪽으로 한 칸 shift하고 생긴 위치에 x를 넣는다. 왼쪽은 ≤x, 오른쪽은 &gt;x이므로 새 prefix가 정렬된다. 원소를 이동/복원하므로 permutation이다. equal에는 shift하지 않아 stable이다. <strong>Termination:</strong> i=n이면 전체 배열이 stable sorted permutation이다.</p>
+          <p><strong>정확한 비용:</strong> shift 하나는 x와 앞 원소 사이 inversion 하나를 제거한다. 따라서 shift 수는 I. loop/insert overhead를 더해 Θ(n+I), best I=0이면 Θ(n), reverse면 I=n(n−1)/2라 Θ(n²)이다. 새 원소가 도착할 때 sorted prefix에 삽입할 수 있어 online이다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">6. 정당성 증명 ② Selection</h2>
+          <p><strong>Initialization:</strong> 빈 prefix는 가장 작은 0개다. <strong>Maintenance:</strong> suffix 전체를 scan해 최솟값 m을 찾는다. m을 A[i]와 바꾸면 새 prefix는 이전의 가장 작은 i개 + 다음 최솟값이므로 가장 작은 i+1개이며 정렬된다. <strong>Termination:</strong> n−1개가 확정되면 마지막 원소도 자동으로 최대다.</p>
+          <p><strong>정확한 비용:</strong> 입력 분포와 무관하게 비교 수는 <code>(n−1)+(n−2)+…+1=n(n−1)/2</code>. swap은 최대 n−1회다. 따라서 비교가 비싸면 nearly sorted 이득이 없지만, record write가 매우 비싼 특수 cost model에서는 적은 swap이 관찰 포인트다.</p>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>불안정 최소 반례:</strong> <code>[(2,a),(2,b),(1,x)]</code>에서 (1,x)를 첫 칸과 swap하면 <code>[(1,x),(2,b),(2,a)]</code>. key는 정렬됐지만 equal 2의 a/b 순서가 뒤집힌다. 단순 swap selection은 stable이 아니다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">7. 정당성 증명 ③ Bubble</h2>
+          <p>왼쪽부터 인접 pair를 비교해 역전이면 swap한다. pass 중 지금까지 본 최댓값은 매 비교마다 오른쪽으로 이동하므로 pass 끝에는 현재 구간의 최댓값이 마지막에 있다. 그 위치를 확정 suffix에 넣고 반복하면 전체가 정렬된다.</p>
+          <p><strong>inversion potential:</strong> 인접 역전 pair를 swap하면 그 두 원소의 inversion 하나만 제거하고 다른 원소와의 상대 순서는 바뀌지 않는다. 따라서 strict <code>&gt;</code> bubble의 swap 수는 정확히 I이고 종료 시 I=0이라 정렬됐다. equal은 swap하지 않아 stable이다. last-swap boundary와 no-swap early exit로 sorted input은 n−1 비교 후 끝난다.</p>
+          <p>이것이 bubble의 가장 큰 교육적 가치다. progress measure I가 매 swap마다 1 감소해 종료와 비용을 동시에 증명한다. 그러나 한 inversion당 swap과 두 slot write를 수행하므로 random/reverse large input에는 이동량이 지나치게 크다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">8. 직접 구현: 세 알고리즘의 차이가 보이는 코드</h2>
+          <div style="padding:14px;background:#292524;color:#fef3c7;border-radius:10px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">def insertion(a):
+    for i in range(1, len(a)):
+        x, j = a[i], i
+        while j &gt; 0 and x.key &lt; a[j-1].key: # equal shift 안 함
+            a[j] = a[j-1]; j -= 1
+        a[j] = x
+
+def selection(a):
+    for i in range(len(a)-1):
+        m = i
+        for j in range(i+1, len(a)):
+            if a[j].key &lt; a[m].key: m = j
+        if m != i: a[i], a[m] = a[m], a[i] # unstable 가능
+
+def bubble(a):
+    end = len(a)
+    while end &gt; 1:
+        last = 0
+        for j in range(1, end):
+            if a[j].key &lt; a[j-1].key:      # equal swap 안 함
+                a[j-1], a[j] = a[j], a[j-1]
+                last = j
+        if last == 0: break
+        end = last</div>
+          <p><strong>코드 리뷰:</strong> equal 비교에 <code>&lt;=</code>를 쓰면 insertion/bubble 안정성이 깨진다. key 함수를 inner loop에서 반복 호출하면 비싼 parsing이 Θ(n²)번 일어난다. key cache는 시간을 줄이지만 O(n) memory와 fail-before-mutate 의미를 추가한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">9. 비교·이동·공간·성질 표</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#fef3c7"><th style="padding:6px;border:1px solid #fde68a">축</th><th style="padding:6px;border:1px solid #fde68a">Insertion</th><th style="padding:6px;border:1px solid #fde68a">Selection</th><th style="padding:6px;border:1px solid #fde68a">Bubble(opt)</th></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">best time</td><td style="padding:6px;border:1px solid #fde68a">Θ(n)</td><td style="padding:6px;border:1px solid #fde68a">Θ(n²)</td><td style="padding:6px;border:1px solid #fde68a">Θ(n)</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">worst time</td><td style="padding:6px;border:1px solid #fde68a">Θ(n²)</td><td style="padding:6px;border:1px solid #fde68a">Θ(n²)</td><td style="padding:6px;border:1px solid #fde68a">Θ(n²)</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">comparisons</td><td style="padding:6px;border:1px solid #fde68a">best n−1, worst n(n−1)/2</td><td style="padding:6px;border:1px solid #fde68a">항상 n(n−1)/2</td><td style="padding:6px;border:1px solid #fde68a">best n−1, worst n(n−1)/2</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">moves/swaps</td><td style="padding:6px;border:1px solid #fde68a">shifts=I + inserts</td><td style="padding:6px;border:1px solid #fde68a">swaps≤n−1</td><td style="padding:6px;border:1px solid #fde68a">swaps=I</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">extra space</td><td style="padding:6px;border:1px solid #fde68a">O(1)</td><td style="padding:6px;border:1px solid #fde68a">O(1)</td><td style="padding:6px;border:1px solid #fde68a">O(1)</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">stable</td><td style="padding:6px;border:1px solid #fde68a">yes(구현 조건)</td><td style="padding:6px;border:1px solid #fde68a">보통 no</td><td style="padding:6px;border:1px solid #fde68a">yes(구현 조건)</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fde68a">adaptive/online</td><td style="padding:6px;border:1px solid #fde68a">yes/yes</td><td style="padding:6px;border:1px solid #fde68a">no/no</td><td style="padding:6px;border:1px solid #fde68a">yes/no</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">10. 테스트 전략</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Postcondition:</strong> adjacent sortedness와 identity multiset permutation을 따로 검사한다.</li>
+            <li><strong>Stability:</strong> record를 <code>(key,originalIndex)</code>로 만들어 key별 index가 증가하는지 검사한다.</li>
+            <li><strong>Invariant hook:</strong> outer loop마다 insertion prefix, selection prefix, bubble suffix 명제를 assert한다.</li>
+            <li><strong>Exact counter:</strong> n=0..9 모든 permutation에서 comparison/swap 수와 formula를 대조한다.</li>
+            <li><strong>Distribution:</strong> sorted, reverse, random, all-equal, few-key, 1% adjacent swaps를 반드시 분리한다.</li>
+            <li><strong>Comparator property:</strong> irreflexive·asymmetric·transitive와 overflow/NaN/locale를 검사한다.</li>
+            <li><strong>Failure:</strong> key extraction/comparator 예외 뒤 partially mutated 상태가 API 계약과 맞는지 확인한다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">11. Benchmark: n=3,000에서 exact cost</h2>
+          <p>CPython 3.9.1에서 <code>(key, originalIndex)</code> 3,000개를 각 알고리즘으로 3회 실행해 중앙값을 구했다. 비교와 배열 write를 계수했고, 결과마다 sortedness·permutation·stability를 검사했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
+            <tr style="background:#fef3c7"><th style="padding:5px;border:1px solid #fde68a">분포</th><th style="padding:5px;border:1px solid #fde68a">Insertion</th><th style="padding:5px;border:1px solid #fde68a">Selection</th><th style="padding:5px;border:1px solid #fde68a">Bubble</th></tr>
+            <tr><td style="padding:5px;border:1px solid #fde68a">random</td><td style="padding:5px;border:1px solid #fde68a">179.888ms<br>2,264,812 C / 2,264,822 W</td><td style="padding:5px;border:1px solid #fde68a">180.283ms<br>4,498,500 C / 5,974 W</td><td style="padding:5px;border:1px solid #fde68a">334.602ms<br>4,492,295 C / 4,523,646 W</td></tr>
+            <tr><td style="padding:5px;border:1px solid #fde68a">sorted</td><td style="padding:5px;border:1px solid #fde68a">0.221ms<br>2,999 C</td><td style="padding:5px;border:1px solid #fde68a">182.248ms<br>4,498,500 C</td><td style="padding:5px;border:1px solid #fde68a">0.154ms<br>2,999 C</td></tr>
+            <tr><td style="padding:5px;border:1px solid #fde68a">1% adjacent swap</td><td style="padding:5px;border:1px solid #fde68a">0.228ms<br>3,029 C / 3,029 W</td><td style="padding:5px;border:1px solid #fde68a">182.076ms<br>4,498,500 C / 60 W</td><td style="padding:5px;border:1px solid #fde68a">0.290ms<br>5,985 C / 60 W</td></tr>
+            <tr><td style="padding:5px;border:1px solid #fde68a">reverse</td><td style="padding:5px;border:1px solid #fde68a">359.728ms<br>4,498,495 C / 4,501,368 W</td><td style="padding:5px;border:1px solid #fde68a">187.605ms<br>4,498,500 C / 3,130 W</td><td style="padding:5px;border:1px solid #fde68a">426.746ms<br>4,498,500 C / 8,996,738 W</td></tr>
+            <tr><td style="padding:5px;border:1px solid #fde68a">all equal</td><td style="padding:5px;border:1px solid #fde68a">0.219ms / stable</td><td style="padding:5px;border:1px solid #fde68a">176.773ms / 이 입력은 유지</td><td style="padding:5px;border:1px solid #fde68a">0.144ms / stable</td></tr>
+          </table>
+          <p>Selection은 distribution을 전혀 이용하지 않아 비교가 항상 4,498,500회였지만 write는 매우 적었다. Bubble은 random/reverse에서 adjacent swap write가 가장 컸다. Insertion과 optimized bubble은 nearly sorted에서 선형에 가까웠다. Selection의 random/reverse stability는 실제로 실패했다.</p>
+          <p><strong>Benchmark 주의:</strong> Python 구현의 절대 시간은 interpreter overhead에 크게 좌우된다. C/W 계수와 분포 변화가 핵심이다. swap write를 2회로 셌고 실제 언어의 move constructor, cache line, write barrier, record width는 다르다. production cutoff는 같은 구현·hardware·record로 측정한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">12. 왜 실무에서 insertion은 살아남고 bubble은 거의 사라졌나</h2>
+          <p>Modern hybrid sort는 큰 문제를 divide/merge/partition한 뒤 작은 run에서 insertion 또는 binary insertion을 사용한다. 짧은 코드, contiguous shift, low overhead, 이미 일부 정렬된 run 활용 때문이다. OpenJDK TimSort도 작은 배열과 짧은 run을 binary insertion으로 확장한다.</p>
+          <p>Selection은 write-minimization 사고를 가르치지만 cache-friendly한 현대 library sort를 이기는 일반 목적 선택은 아니다. Bubble의 adjacent repair는 inversion 증명과 교육에는 훌륭하지만 같은 I에 대해 insertion은 block shift 형태로 더 단순하고 write/branch가 적기 쉽다. “배운다”와 “production 기본값으로 쓴다”를 구분한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">13. Error handling과 안전한 API</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#fef3c7"><th style="padding:7px;border:1px solid #fde68a">실패</th><th style="padding:7px;border:1px solid #fde68a">대응</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">invalid range</td><td style="padding:7px;border:1px solid #fde68a">0≤lo≤hi≤n 사전 검사, side effect 전에 오류</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">comparator overflow/NaN</td><td style="padding:7px;border:1px solid #fde68a">subtraction 비교 금지, NaN/NULL/locale total-order 정책</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">comparator/key 예외</td><td style="padding:7px;border:1px solid #fde68a">입력이 부분 변경될 수 있는지 문서화; key precompute로 fail-before-mutate 고려</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">huge untrusted n</td><td style="padding:7px;border:1px solid #fde68a">quadratic work cap, deadline/cancellation, library sort/top-k로 전환</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">mutable/stateful comparator</td><td style="padding:7px;border:1px solid #fde68a">정렬 중 key snapshot, purity 계약, property test</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fde68a">record move failure</td><td style="padding:7px;border:1px solid #fde68a">언어별 exception guarantee 확인; identity/permutation 보존 여부 검증</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">14. Production Best Practice</h2>
+          <ol style="padding-left:22px">
+            <li>직접 elementary sort를 배포하기 전에 표준 library의 stability·worst case·memory 계약을 우선 사용한다.</li>
+            <li>hybrid cutoff는 상수 16/32를 복사하지 말고 record width·key cost·CPU별 benchmark로 정한다.</li>
+            <li>small/nearly sorted run에는 insertion을 고려하고 큰 general input에는 non-quadratic 알고리즘을 쓴다.</li>
+            <li>write가 비싸면 comparison과 write를 별도 계수하되 selection의 Θ(n²) read/comparison 비용도 포함한다.</li>
+            <li>stable이 business contract면 equal-key original order를 회귀 테스트에 넣고 library 변경 때 검증한다.</li>
+            <li>untrusted 입력에는 n·time·memory cap과 cancellation을 두어 algorithmic DoS를 막는다.</li>
+            <li>성능 log에는 n뿐 아니라 inversion/run/duplicate 비율과 C/W/moved bytes를 남긴다.</li>
+          </ol>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">15. Anti-pattern</h2>
+          <ul style="padding-left:22px">
+            <li><strong>O(n²)이니 셋은 같다:</strong> best case, exact comparisons, writes, stability, online 성질이 다르다.</li>
+            <li><strong>binary search insertion이면 O(n log n):</strong> 위치 비교는 줄어도 array shift는 Θ(n²)일 수 있다.</li>
+            <li><strong>selection은 항상 stable:</strong> 최솟값 swap이 equal record를 가로질러 순서를 뒤집는다.</li>
+            <li><strong>bubble no-swap flag 누락:</strong> sorted input에서도 불필요한 Θ(n²) 비교를 한다.</li>
+            <li><strong>equal에 swap/shift:</strong> <code>&lt;=</code> 하나로 stability와 all-equal best case를 망친다.</li>
+            <li><strong>large request에 교육용 구현:</strong> quadratic algorithmic DoS와 timeout을 만든다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#fef3c7;border-radius:10px"><strong>Q1. 세 알고리즘이 모두 O(n²)인데 차이가 있나요?</strong><br>Insertion은 Θ(n+I), stable·adaptive·online이고 shift=I다. Selection은 항상 n(n−1)/2 비교지만 swap≤n−1, 보통 unstable이다. Optimized bubble은 best Θ(n), stable, swap=I지만 adjacent swap write가 커 일반 실무에서는 거의 쓰지 않는다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#fef3c7;border-radius:10px"><strong>Q2. insertion sort가 library 내부에서 쓰이는 이유는?</strong><br>작은 partition/run에서는 n log n 알고리즘의 recursion/merge/partition overhead보다 짧은 contiguous shift가 싸고, 이미 일부 정렬됐으면 Θ(n+I)로 빠르다. cutoff는 구현·record·hardware에 맞춰 측정한다.</div>
+          <div style="padding:16px;background:#fef3c7;border-radius:10px"><strong>Q3. bubble sort의 정당성을 inversion으로 증명해 보세요.</strong><br>인접 역전 swap은 다른 원소의 상대 순서를 건드리지 않고 해당 inversion 하나만 제거한다. I는 음이 아닌 정수이며 swap마다 1 감소하고, pass에서 swap이 없으면 I=0이므로 정렬됐다. strict 비교면 equal을 swap하지 않아 stable이다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>n=5 selection sort의 비교 수를 정확히 계산하라.</li>
+            <li>insertion shift 수가 inversion 수와 같은 이유를 설명하라.</li>
+            <li>bubble 인접 swap이 inversion을 정확히 하나 줄이는 이유는?</li>
+            <li>selection instability 최소 반례를 직접 trace하라.</li>
+            <li>binary insertion이 비교는 O(n log n)이어도 이동이 O(n²)인 이유는?</li>
+            <li>all-equal 입력에서 <code>&lt;=</code> 사용이 만드는 성능·stability 문제는?</li>
+            <li>write cost가 comparison의 100배일 때 selection 후보를 어떻게 검증할까?</li>
+            <li>small-run cutoff를 정하는 benchmark matrix를 작성하라.</li>
+            <li>Day 36의 stable/in-place/adaptive 세 축에 오늘 알고리즘을 배치하라.</li>
+            <li>전체 sort 대신 top-k가 필요한 반례 workload를 제시하라.</li>
+          </ol>
+          <div style="padding:16px;background:#e0f2fe;border:1px solid #0284c7;border-radius:10px"><strong>다음 Day 38 · merge sort와 divide-and-conquer</strong><br>분할·재귀·stable merge의 불변식부터 T(n)=2T(n/2)+Θ(n), auxiliary memory, linked/external sort와 parallel merge trade-off를 다룬다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#b45309">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://www.cs.cmu.edu/~rdriley/121/notes/sorting/" style="color:#b45309">Carnegie Mellon · Searching and Sorting</a> — bubble/insertion/selection 구현, 효율과 stability.</li>
+            <li><a href="https://www.cs.cmu.edu/~clo/www/CMU/DataStructures/Lessons/lesson8_1.htm" style="color:#b45309">Carnegie Mellon · Introduction to Sorting</a> — adjacent exchange, selection, insertion과 비교·swap 관점.</li>
+            <li><a href="https://www.cs.cmu.edu/~rjsimmon/15122-s15/lec/06-sort.pdf" style="color:#b45309">CMU 15-122 · Sorting Algorithms</a> — selection sort invariant와 correctness 중심 강의 노트.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/1869dbf640ded6b31f1bd369d2001ef5_MIT6_006S20_r03.pdf" style="color:#b45309">MIT 6.006 · Recitation 3</a> — insertion/selection, in-place와 stability 분석.</li>
+            <li><a href="https://cr.openjdk.org/~chegar/8014076/ver.01/webrev/src/share/classes/java/util/TimSort.java.rhs.html" style="color:#b45309">OpenJDK TimSort source</a> — 작은 배열과 짧은 run에서 binary insertion을 쓰는 production hybrid 사례.</li>
+          </ul>
+          <p style="margin-top:26px;padding-top:18px;border-top:1px solid #e7e5e4;color:#78716c;font-size:12px">실습 체크: 세 구현 작성 → loop invariant assert → n≤9 permutation 전수 검사 → C/W 계수 → 5분포 benchmark → library hybrid cutoff 실험.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

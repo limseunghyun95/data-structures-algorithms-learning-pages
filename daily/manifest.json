@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-10-13T09:01:03+09:00",
+  "updatedAt": "2026-10-14T09:01:29+09:00",
   "lessons": [
     {
       "day": 1,
@@ -329,6 +329,15 @@
       "path": "day-36.html",
       "kind": "lesson",
       "publishedAt": "2026-10-13T09:01:03+09:00"
+    },
+    {
+      "day": 37,
+      "week": 6,
+      "title": "insertion, selection, bubble의 교육적 의미",
+      "summary": "세 O(n²) 정렬을 loop invariant와 exact comparison/write cost로 증명하고, inversion·stability·adaptiveness·online·small-run production 활용까지 비교합니다.",
+      "path": "day-37.html",
+      "kind": "lesson",
+      "publishedAt": "2026-10-14T09:01:29+09:00"
     }
   ]
 }
