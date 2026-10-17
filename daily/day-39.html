@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 39 · quicksort, partition, worst case</title>
+</head>
+<body style="margin:0;background:#27120b;color:#292524;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#27120b">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#fffaf5;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px;background:#c2410c;color:#fff7ed">
+          <div style="color:#fed7aa;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 6 / DAY 39</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">빠른 평균보다 중요한 것은<br>나쁜 partition을 끝내는 장치다</h1>
+          <p style="margin:0;color:#ffedd5">quicksort · partition invariant · duplicate keys · adversarial input · introspective fallback · 220분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #ea580c;background:#ffedd5;border-radius:10px"><strong>한 줄 요약</strong><br>Quicksort의 성능은 재귀 자체가 아니라 <strong>pivot이 만드는 partition의 균형</strong>에 달려 있다. 평균 Θ(n log n)·좋은 locality를 얻되, 3-way duplicate 처리·작은 쪽 우선 재귀·깊이 제한 뒤 heapsort fallback으로 Θ(n²) 시간과 O(n) stack을 production에서 봉쇄한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Pivot</strong></td><td style="padding:7px;border:1px solid #fed7aa">배열을 작은 값과 큰 값으로 나누는 기준 값. pivot의 rank가 분할 균형을 결정한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Rank</strong></td><td style="padding:7px;border:1px solid #fed7aa">정렬했을 때 원소가 차지할 순위. 중앙 rank에 가까운 pivot이 균형 분할을 만든다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Partition</strong></td><td style="padding:7px;border:1px solid #fed7aa">pivot을 기준으로 원소를 재배치하는 선형 scan. Quicksort의 핵심 subroutine이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Lomuto partition</strong></td><td style="padding:7px;border:1px solid #fed7aa">한 방향 scan과 경계 i를 쓰는 단순한 partition. 증명은 쉽지만 동률·이미 정렬된 입력에 취약할 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Hoare partition</strong></td><td style="padding:7px;border:1px solid #fed7aa">양쪽에서 scan해 잘못 놓인 두 원소를 교환한다. swap이 적지만 반환 경계와 재귀 범위가 더 미묘하다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>3-way partition</strong></td><td style="padding:7px;border:1px solid #fed7aa">배열을 <code>&lt;p</code>, <code>==p</code>, <code>&gt;p</code> 세 구간으로 나눠 equal 구간을 재귀에서 제외한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Dutch National Flag</strong></td><td style="padding:7px;border:1px solid #fed7aa">lt·i·gt 세 경계로 3-way partition을 한 번의 scan에 수행하는 Dijkstra의 불변식 패턴.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Adversarial input</strong></td><td style="padding:7px;border:1px solid #fed7aa">pivot 규칙을 알아낸 공격자나 우연한 패턴이 반복해서 극단적으로 불균형한 partition을 만드는 입력.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Randomized algorithm</strong></td><td style="padding:7px;border:1px solid #fed7aa">pivot을 무작위로 골라 입력 순서와 실행 비용의 상관을 끊는 방식. 기대 시간과 최악 시간은 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Median-of-three</strong></td><td style="padding:7px;border:1px solid #fed7aa">첫·중간·마지막 값의 중앙값을 pivot으로 쓰는 heuristic. 흔한 패턴에는 좋지만 worst-case 보장은 아니다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>Introsort</strong></td><td style="padding:7px;border:1px solid #fed7aa">quicksort로 시작하고 깊이가 한도를 넘으면 heapsort로 바꿔 worst Θ(n log n)을 보장하는 hybrid.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa"><strong>PDQsort</strong></td><td style="padding:7px;border:1px solid #fed7aa">pattern-defeating quicksort. 나쁜 partition과 이미 정렬된 패턴을 감지하고 heap fallback 등을 결합한다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">2. 문제·입출력·제약 mental model</h2>
+          <div style="padding:14px;background:#292524;color:#ffedd5;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">Input:  A[lo:hi), comparator/key
+Output: 같은 identity multiset의 nondecreasing permutation
+Default quicksort: in-place, unstable
+
+먼저 물을 것:
+- 외부 사용자가 입력 패턴을 제어하는가?
+- equal key가 많은가? distinct cardinality는?
+- stable order가 계약인가?
+- worst latency와 stack 상한이 필요한가?
+- comparison, swap, record move 중 무엇이 비싼가?
+- comparator가 strict weak order를 지키는가?</div>
+          <p>“평균 O(n log n)”만 말하면 설계가 끝나지 않는다. production 선택은 <strong>pivot policy + partition scheme + duplicate policy + depth/stack policy + fallback</strong>의 묶음이다. stable이 필수라면 일반 in-place quicksort보다 stable library sort를 먼저 검토한다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">workload</th><th style="padding:7px;border:1px solid #fed7aa">필요한 장치</th><th style="padding:7px;border:1px solid #fed7aa">이유</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">distinct random, memory tight</td><td style="padding:7px;border:1px solid #fed7aa">2-way quick + cutoff</td><td style="padding:7px;border:1px solid #fed7aa">짧은 inner loop, good locality</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">duplicate가 많음</td><td style="padding:7px;border:1px solid #fed7aa">3-way partition</td><td style="padding:7px;border:1px solid #fed7aa">equal band를 재귀에서 제거</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">untrusted input/p99 SLO</td><td style="padding:7px;border:1px solid #fed7aa">depth budget + heap fallback</td><td style="padding:7px;border:1px solid #fed7aa">quadratic DoS 차단</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">stable 필요</td><td style="padding:7px;border:1px solid #fed7aa">merge/Timsort 계열</td><td style="padding:7px;border:1px solid #fed7aa">in-place quick은 보통 unstable</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">3. Architecture/decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:35%;padding:12px;background:#ea580c;color:#fff;border-radius:8px"><strong>① Contract</strong></td><td style="padding:12px;background:#ffedd5">stable? worst bound? memory·stack·failure semantics?</td></tr>
+            <tr><td align="center" colspan="2" style="color:#ea580c;font-weight:800">↓ distribution·cardinality·trust boundary</td></tr>
+            <tr><td style="padding:12px;background:#c2410c;color:#fff;border-radius:8px"><strong>② Pivot</strong></td><td style="padding:12px;background:#ffedd5">random / sampled median / pattern-aware</td></tr>
+            <tr><td align="center" colspan="2" style="color:#ea580c;font-weight:800">↓ duplicate ratio</td></tr>
+            <tr><td style="padding:12px;background:#9a3412;color:#fff;border-radius:8px"><strong>③ Partition</strong></td><td style="padding:12px;background:#ffedd5">Hoare/Lomuto 또는 &lt;·=·&gt; 3-way</td></tr>
+            <tr><td align="center" colspan="2" style="color:#ea580c;font-weight:800">↓ bad partition counter·smaller-side first</td></tr>
+            <tr><td style="padding:12px;background:#7c2d12;color:#fff;border-radius:8px"><strong>④ Guardrail</strong></td><td style="padding:12px;background:#ffedd5">insertion cutoff · heap fallback · cancellation</td></tr>
+            <tr><td align="center" colspan="2" style="color:#ea580c;font-weight:800">↓ distribution matrix + adversarial suite</td></tr>
+            <tr><td style="padding:12px;background:#431407;color:#fff;border-radius:8px"><strong>⑤ Operate</strong></td><td style="padding:12px;background:#ffedd5">depth·fallback·comparisons·p99 관측</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">4. Sorting ADT와 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>sort(A,cmp)</code>는 입력 identity multiset과 같은 원소를 cmp 순서의 permutation으로 만든다. 일반 quicksort는 equal-key 상대 순서를 보존하지 않는다는 점을 API 계약에 명시해야 한다.</p>
+          <p><strong>Lomuto 상태:</strong> pivot은 <code>A[hi-1]</code>, scan cursor j와 small-boundary i를 쓴다.</p>
+          <div style="padding:14px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">[lo, i)      [i, j)       [j, hi-1)      [hi-1]
+  ≤ pivot       &gt; pivot       unknown          pivot</div>
+          <ul style="padding-left:22px">
+            <li>각 반복 시작에 네 구간이 서로 겹치지 않고 정확히 <code>[lo,hi)</code>를 덮는다.</li>
+            <li><code>A[j] ≤ pivot</code>이면 A[i]와 바꾸고 i를 증가시켜 ≤ 구간을 한 칸 확장한다.</li>
+            <li>scan 종료 후 pivot과 A[i]를 바꾸면 <code>[lo,i] ≤ pivot</code>, <code>[i+1,hi) &gt; pivot</code>이고 pivot은 i에 고정된다.</li>
+            <li>재귀 범위는 pivot을 제외한 <code>[lo,i)</code>, <code>[i+1,hi)</code>여야 진척되고 무한 재귀가 없다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">5. Lomuto partition 정당성</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Initialization:</strong> i=j=lo이므로 ≤와 &gt; 구간이 empty이고 invariant가 참이다.</li>
+            <li><strong>Maintenance:</strong> A[j]가 ≤pivot이면 경계 i로 보내 두 구간 성질을 보존한다. &gt;pivot이면 그대로 &gt; 구간 끝에 포함한다. 어느 경우든 unknown이 한 칸 줄어든다.</li>
+            <li><strong>Termination:</strong> j=hi−1이면 unknown이 empty다. pivot을 i로 옮기면 왼쪽은 모두 ≤, 오른쪽은 모두 &gt;이고 pivot 위치가 확정된다.</li>
+            <li><strong>전체 correctness:</strong> 더 작은 두 범위가 귀납적으로 정렬되고, 왼쪽≤pivot&lt;오른쪽이므로 결합된 범위도 정렬된다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>최소 불안정 반례:</strong> <code>[(2,a),(2,b),(1,x)]</code>에서 마지막 pivot 1을 첫 위치로 옮기면 <code>[(1,x),(2,b),(2,a)]</code>. 값은 정렬되지만 equal 2의 a/b 순서는 뒤집힌다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">6. 3-way partition: duplicate를 한 번에 제거</h2>
+          <div style="padding:14px;background:#292524;color:#ffedd5;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">[lo, lt)   [lt, i)   [i, gt)   [gt, hi)
+   &lt; p        == p      unknown      &gt; p
+
+A[i] &lt; p : swap(A[lt],A[i]); lt++; i++
+A[i] = p : i++
+A[i] &gt; p : gt--; swap(A[i],A[gt])  # 새 A[i]는 아직 unknown</div>
+          <p>종료 시 <code>i==gt</code>이고 unknown이 사라진다. <code>[lt,gt)</code> 전체가 equal이므로 재귀하지 않는다. distinct key에서는 추가 비교가 들 수 있지만, all-equal은 한 번의 linear partition으로 끝난다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">7. 시간·공간·expected·amortized 분석</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">경우</th><th style="padding:7px;border:1px solid #fed7aa">recurrence</th><th style="padding:7px;border:1px solid #fed7aa">결과</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">균형 partition</td><td style="padding:7px;border:1px solid #fed7aa"><code>T(n)=2T(n/2)+Θ(n)</code></td><td style="padding:7px;border:1px solid #fed7aa">Θ(n log n)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">매번 0 : n−1</td><td style="padding:7px;border:1px solid #fed7aa"><code>T(n)=T(n−1)+Θ(n)</code></td><td style="padding:7px;border:1px solid #fed7aa">Θ(n²)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">uniform random pivot</td><td style="padding:7px;border:1px solid #fed7aa">모든 rank 기대값 평균</td><td style="padding:7px;border:1px solid #fed7aa">expected Θ(n log n), worst Θ(n²)</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">introspective fallback</td><td style="padding:7px;border:1px solid #fed7aa">depth budget 소진 후 heapsort</td><td style="padding:7px;border:1px solid #fed7aa">worst Θ(n log n)</td></tr>
+          </table>
+          <ul style="padding-left:22px">
+            <li>마지막 pivot + sorted/all-equal Lomuto 비교 수는 정확히 <code>n(n−1)/2</code>다.</li>
+            <li>naive recursion stack은 best/expected O(log n), worst O(n). 작은 partition만 재귀하고 큰 쪽은 loop로 처리하면 stack은 worst O(log n)이지만 <strong>작업량 Θ(n²)은 그대로</strong>다.</li>
+            <li>배열 자체 partition은 O(1) auxiliary이고 cache-friendly지만, stack과 comparator/key 상태는 별도 비용이다.</li>
+            <li><strong>expected ≠ amortized:</strong> random pivot의 Θ(n log n)은 난수에 대한 기대값이다. 연산 sequence의 총비용을 나누는 amortized 보장이 아니다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">8. 직접 구현: 3-way + 작은 쪽 우선</h2>
+          <div style="padding:14px;background:#292524;color:#ffedd5;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;white-space:pre-wrap">def quick3(a, lo, hi, key=lambda x: x):
+    while hi - lo &gt; 1:
+        p = median3(key(a[lo]), key(a[(lo+hi-1)//2]), key(a[hi-1]))
+        lt, i, gt = lo, lo, hi
+        while i &lt; gt:
+            k = key(a[i])
+            if k &lt; p:
+                a[lt], a[i] = a[i], a[lt]
+                lt += 1; i += 1
+            elif k &gt; p:
+                gt -= 1
+                a[i], a[gt] = a[gt], a[i]
+            else:
+                i += 1
+
+        # 작은 쪽만 재귀, 큰 쪽은 tail loop: stack O(log n)
+        if lt - lo &lt; hi - gt:
+            quick3(a, lo, lt, key)
+            lo = gt
+        else:
+            quick3(a, gt, hi, key)
+            hi = lt</div>
+          <p>이 구현은 학습용이다. median-of-three와 3-way도 worst Θ(n²)을 제거하지 않는다. production 버전은 작은 구간 insertion cutoff, bad-partition/depth budget, heapsort fallback, key caching과 cancellation을 추가한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">9. Introspective guardrail</h2>
+          <div style="padding:14px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">budget = 2 * floor(log2(n))
+while range is larger than cutoff:
+    if budget == 0:
+        heapsort(range)       # worst Θ(m log m)
+        return
+    partition(range)
+    if partition is highly unbalanced:
+        budget -= 1
+    recurse smaller side; iterate larger side
+insertion_sort(tiny range)</div>
+          <p>핵심은 “좋은 pivot을 항상 맞힌다”가 아니라 <strong>계속 틀렸을 때 다른 알고리즘으로 종료한다</strong>는 것이다. Go의 현재 <code>slices.Sort</code>도 PDQsort 기반으로 bad pivot limit을 두고 heapsort로 fallback하며, 작은 범위는 insertion sort, duplicate는 equal partition으로 처리한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">10. 테스트 전략</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Partition property:</strong> 반환 경계마다 왼쪽/같음/오른쪽 predicate를 즉시 검사한다.</li>
+            <li><strong>Sortedness + identity permutation:</strong> 중복·object identity까지 보존됐는지 reference sort와 비교한다.</li>
+            <li><strong>Progress:</strong> 모든 재귀 범위가 부모보다 작고 pivot/equal band가 제외되는지 assert한다.</li>
+            <li><strong>Exhaustive:</strong> n=0..8 모든 permutation을 Lomuto·random-pivot·3-way에 대조한다.</li>
+            <li><strong>Adversarial matrix:</strong> sorted, reverse, organ-pipe, sawtooth, all-equal, few-distinct, median-of-three killer.</li>
+            <li><strong>Resource oracle:</strong> max depth, pending stack, bad partitions, fallback count가 설정 상한을 넘지 않는지 확인한다.</li>
+            <li><strong>Comparator fault:</strong> k번째 비교 예외, NaN/비교불가, non-transitive comparator에서 API 실패 계약을 확인한다.</li>
+          </ol>
+          <div style="padding:14px;background:#ecfdf5;border:1px solid #10b981;border-radius:10px"><strong>오늘 검증:</strong> Python 3.11.6에서 n=0..8 모든 permutation과 duplicate 입력을 세 구현으로 reference sort에 대조했다. sortedness·identity permutation을 통과했고, Lomuto 불안정 최소 반례도 실행으로 확인했다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">11. Benchmark: 분포가 알고리즘을 바꾼다</h2>
+          <p>arm64 macOS 26.6.2, Python 3.11.6, n=4,096 `(key,identity)`, 3회 중앙값. Lomuto는 마지막/random pivot, 3-way는 median-of-three다. 재귀 overflow를 피하려고 명시적 stack을 썼고, depth는 개념적 partition tree 깊이다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
+            <tr style="background:#ffedd5"><th style="padding:6px;border:1px solid #fed7aa">분포</th><th style="padding:6px;border:1px solid #fed7aa">last Lomuto ms / C / depth</th><th style="padding:6px;border:1px solid #fed7aa">random Lomuto</th><th style="padding:6px;border:1px solid #fed7aa">3-way median3</th></tr>
+            <tr><td style="padding:6px;border:1px solid #fed7aa">random unique</td><td style="padding:6px;border:1px solid #fed7aa">6.719 / 60,703 / 29</td><td style="padding:6px;border:1px solid #fed7aa">7.329 / 53,902 / 26</td><td style="padding:6px;border:1px solid #fed7aa">9.335 / 87,208 / 23</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fed7aa">sorted</td><td style="padding:6px;border:1px solid #fed7aa">640.344 / 8,386,560 / 4,096</td><td style="padding:6px;border:1px solid #fed7aa">5.853 / 52,984 / 25</td><td style="padding:6px;border:1px solid #fed7aa">21.994 / 304,684 / 72</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fed7aa">reverse</td><td style="padding:6px;border:1px solid #fed7aa">494.831 / 8,386,560 / 4,096</td><td style="padding:6px;border:1px solid #fed7aa">7.000 / 60,333 / 32</td><td style="padding:6px;border:1px solid #fed7aa">17.256 / 226,897 / 53</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fed7aa">organ-pipe</td><td style="padding:6px;border:1px solid #fed7aa">159.592 / 1,441,089 / 1,036</td><td style="padding:6px;border:1px solid #fed7aa">6.702 / 58,642 / 29</td><td style="padding:6px;border:1px solid #fed7aa">56.538 / 561,730 / 520</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fed7aa">16 keys</td><td style="padding:6px;border:1px solid #fed7aa">46.375 / 543,454 / 290</td><td style="padding:6px;border:1px solid #fed7aa">47.099 / 541,122 / 281</td><td style="padding:6px;border:1px solid #fed7aa">2.146 / 29,613 / 8</td></tr>
+            <tr><td style="padding:6px;border:1px solid #fed7aa">all equal</td><td style="padding:6px;border:1px solid #fed7aa">658.729 / 8,386,560 / 4,096</td><td style="padding:6px;border:1px solid #fed7aa">657.873 / 8,386,560 / 4,096</td><td style="padding:6px;border:1px solid #fed7aa">0.484 / 8,195 / 2</td></tr>
+          </table>
+          <p><strong>해석:</strong> random pivot은 위치 패턴(sorted/reverse)을 끊었지만 all-equal의 <code>≤ pivot</code> 편향은 못 고쳤다. 3-way는 duplicate를 선형에 가깝게 처리했지만 organ-pipe가 median-of-three를 반복 오도했다. heuristic 하나가 아니라 duplicate policy와 fallback을 함께 둬야 한다.</p>
+          <p><strong>Benchmark 주의:</strong> Python 시간은 interpreter overhead가 크므로 절대값을 다른 언어에 옮기지 않는다. 비교·swap·partition·depth·fallback을 함께 기록하고, seed별 분산·cold/warm cache·record width·comparator 비용·p95/p99를 측정한다. validation과 input copy 포함 여부도 분리한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">12. Memory와 locality</h2>
+          <ul style="padding-left:22px">
+            <li>array partition은 연속 범위를 scan해 merge sort의 Θ(n) aux를 피하고 cache locality가 좋다.</li>
+            <li>“in-place O(1)”은 stack을 제외한 표현이다. naive worst stack O(n)은 메모리 안전성 문제다.</li>
+            <li>작은 쪽 우선 재귀 + 큰 쪽 loop는 stack을 O(log n)으로 제한하지만 quadratic CPU는 heap fallback이 막아야 한다.</li>
+            <li>큰 record는 swap마다 여러 cache line을 쓰므로 pointer/index를 정렬하고 마지막 permutation 비용을 따로 측정한다.</li>
+            <li>branch prediction은 분포와 partition scheme에 민감하다. comparison count가 같아도 wall time이 달라질 수 있다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">13. Error handling과 failure semantics</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#ffedd5"><th style="padding:7px;border:1px solid #fed7aa">실패</th><th style="padding:7px;border:1px solid #fed7aa">위험</th><th style="padding:7px;border:1px solid #fed7aa">대응</th></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">comparator 예외</td><td style="padding:7px;border:1px solid #fed7aa">partial permutation 노출</td><td style="padding:7px;border:1px solid #fed7aa">partial-mutation 계약 문서화; atomic 필요 시 copy-sort-swap</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">non-transitive order</td><td style="padding:7px;border:1px solid #fed7aa">“정렬됨” 정의 붕괴</td><td style="padding:7px;border:1px solid #fed7aa">strict weak ordering property test·NaN 정책</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">stack/depth 폭증</td><td style="padding:7px;border:1px solid #fed7aa">crash·DoS</td><td style="padding:7px;border:1px solid #fed7aa">smaller-side first·depth budget·heap fallback</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">predictable randomness</td><td style="padding:7px;border:1px solid #fed7aa">crafted bad pivots</td><td style="padding:7px;border:1px solid #fed7aa">fallback을 최종 보장으로 사용; seed는 보조 방어</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">index overflow/OOB</td><td style="padding:7px;border:1px solid #fed7aa">memory corruption</td><td style="padding:7px;border:1px solid #fed7aa">반열린 범위·checked arithmetic·boundary tests</td></tr>
+            <tr><td style="padding:7px;border:1px solid #fed7aa">concurrent mutation</td><td style="padding:7px;border:1px solid #fed7aa">partition RI 붕괴</td><td style="padding:7px;border:1px solid #fed7aa">exclusive ownership/immutable snapshot</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">14. 실무 best practice</h2>
+          <ul style="padding-left:22px">
+            <li>검증된 표준 library sort를 우선하고 stable, worst bound, comparator 계약을 문서에서 확인한다.</li>
+            <li>duplicate cardinality를 알 수 없으면 equal band가 있는 partition을 검토한다.</li>
+            <li>작은 partition은 insertion sort로 넘기되 cutoff는 record·comparator·CPU별 benchmark로 정한다.</li>
+            <li>bad partition/depth counter와 heap fallback을 둬 입력 패턴과 무관한 종료 상한을 만든다.</li>
+            <li>key가 비싸면 decorate-sort-undecorate로 한 번 계산하고 original index로 deterministic tie-break할 수 있다.</li>
+            <li>metrics에 max depth, bad partitions, fallback count, comparisons, swaps, duration/p99를 포함한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">15. Anti-pattern</h2>
+          <ul style="padding-left:22px">
+            <li><strong>항상 first/last pivot:</strong> sorted/reverse 입력이 바로 Θ(n²)과 깊이 n을 만든다.</li>
+            <li><strong>random pivot이면 끝:</strong> all-equal을 2-way 편향으로 보내면 여전히 quadratic이다.</li>
+            <li><strong>median-of-three를 보장으로 오해:</strong> organ-pipe/killer pattern은 heuristic을 반복 속인다.</li>
+            <li><strong>equal에서 scan 정지 규칙 누락:</strong> OOB, 무한 loop, duplicate quadratic으로 이어진다.</li>
+            <li><strong>큰 쪽부터 재귀:</strong> 불필요하게 pending stack을 키운다.</li>
+            <li><strong>sortedness만 테스트:</strong> 원소 소실·복제와 unstable 회귀를 놓친다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q1. Quicksort가 평균 빠르면서 최악 Θ(n²)인 이유는?</strong><br>partition은 매번 Θ(n)이지만 pivot rank에 따라 recursion tree 높이가 log n 또는 n이 된다. 균형이면 층당 n × log n, 극단이면 n+(n−1)+…+1이다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ffedd5;border-radius:10px"><strong>Q2. random pivot으로 충분하지 않은 사례는?</strong><br>2-way Lomuto의 all-equal 입력은 어떤 위치를 뽑아도 한쪽 크기가 n−1이다. randomization은 위치 패턴만 끊고 equality policy는 고치지 않는다. 3-way equal band가 필요하다.</div>
+          <div style="padding:16px;background:#ffedd5;border-radius:10px"><strong>Q3. production quicksort를 어떻게 방어하나요?</strong><br>sample/random pivot, 3-way duplicate 처리, insertion cutoff, 작은 쪽 우선 재귀, bad-partition/depth budget과 heapsort fallback을 묶는다. strict weak comparator와 partial-mutation 계약, depth/fallback metrics도 둔다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>Lomuto 네 구간 invariant를 빈칸 없이 그려라.</li>
+            <li>n=5 sorted 입력, last pivot의 비교 수를 trace하라.</li>
+            <li>왜 random pivot이 all-equal 2-way partition을 구하지 못하는가?</li>
+            <li>3-way에서 <code>A[i]&gt;p</code> swap 후 i를 증가시키면 안 되는 이유는?</li>
+            <li>작은 쪽 우선이 stack과 CPU worst-case에 각각 미치는 영향을 구분하라.</li>
+            <li>Day 38 merge sort와 stability·aux memory·worst bound·locality를 비교하라.</li>
+          </ol>
+          <div style="padding:15px;background:#fff7ed;border-radius:10px"><strong>누적 리뷰 답변 골격:</strong> “quicksort가 빠르다”가 아니라 <em>분포/신뢰 경계 → pivot·duplicate policy → partition invariant → depth/fallback 보장 → 분포별 C/swap/depth/p99</em> 순서로 방어한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">18. 다음 날 연결</h2>
+          <p>Day 40은 <strong>heapsort, counting/radix sort</strong>다. Heapsort는 quicksort의 fallback으로 worst Θ(n log n)·O(1) aux를 제공하지만 locality와 상수가 다르다. Counting/radix는 comparison lower bound를 피하는 대신 key universe·digit·extra memory라는 새 계약을 요구한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#c2410c">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://ocw.mit.edu/courses/6-046j-introduction-to-algorithms-sma-5503-fall-2005/ef415d49479b56f7d3424d70bff51d66_lec4.pdf" style="color:#c2410c">MIT 6.046J · Quicksort lecture</a> — partition, randomized expected analysis와 sorted/reverse worst-case recurrence.</li>
+            <li><a href="https://algs4.cs.princeton.edu/23quicksort/" style="color:#c2410c">Princeton Algorithms · Quicksort</a> — partition 구현 함정, 평균/최악 비교 수, random shuffle와 3-way duplicate 처리.</li>
+            <li><a href="https://algs4.cs.princeton.edu/code/edu/princeton/cs/algs4/Quick3way.java.html" style="color:#c2410c">Princeton Quick3way source</a> — Dutch National Flag 기반 3-way 구현.</li>
+            <li><a href="https://go.dev/src/slices/sort.go" style="color:#c2410c">Go slices sort API/source</a> — strict weak ordering 계약과 PDQsort 진입점.</li>
+            <li><a href="https://go.dev/src/sort/gen_sort_variants.go" style="color:#c2410c">Go sort generator source</a> — bad pivot limit, heapsort fallback, insertion cutoff, equal partition과 smaller-side recursion.</li>
+            <li><a href="https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/util/DualPivotQuicksort.java" style="color:#c2410c">OpenJDK DualPivotQuicksort source</a> — insertion·run merge·heap/counting sort를 결합한 production hybrid 사례.</li>
+          </ul>
+          <p style="margin-top:26px;padding-top:18px;border-top:1px solid #e7e5e4;color:#78716c;font-size:12px">실습 체크: Lomuto invariant → n≤8 전수 검사 → instability 반례 → 3-way duplicate → 6분포 C/swap/depth → depth budget + heap fallback.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
