@@ -4,7 +4,7 @@
   "tagline": "연산 계약에서 invariant·proof·production trade-off까지",
   "accent": "#fbbf24",
   "totalDays": 84,
-  "updatedAt": "2026-10-17T09:03:01+09:00",
+  "updatedAt": "2026-10-18T09:17:05+09:00",
   "lessons": [
     {
       "day": 1,
@@ -356,6 +356,15 @@
       "path": "day-39.html",
       "kind": "lesson",
       "publishedAt": "2026-10-17T09:03:01+09:00"
+    },
+    {
+      "day": 40,
+      "week": 6,
+      "title": "heapsort, counting/radix sort",
+      "summary": "Heap·counting·LSD radix의 표현 불변식과 정당성을 증명하고, Θ(n log n) 보장·key range·stability·signed 변환·memory/locality·production guard까지 연결합니다.",
+      "path": "day-40.html",
+      "kind": "lesson",
+      "publishedAt": "2026-10-18T09:17:05+09:00"
     }
   ]
 }

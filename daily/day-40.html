@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 40 · heapsort, counting/radix sort</title>
+</head>
+<body style="margin:0;background:#172554;color:#172033;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#172554">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#f8fafc;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px;background:#1d4ed8;color:#eff6ff">
+          <div style="color:#bfdbfe;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 6 / DAY 40</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">정렬의 하한을 피하려면<br>입력 표현에 대한 대가를 내야 한다</h1>
+          <p style="margin:0;color:#dbeafe">heapsort · counting sort · LSD radix · invariants · range guard · production hybrid · 230분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #2563eb;background:#dbeafe;border-radius:10px"><strong>한 줄 요약</strong><br><strong>Heapsort</strong>는 비교만으로 worst Θ(n log n)·O(1) 보조 공간을 보장하고, <strong>counting/radix sort</strong>는 정수 key의 범위·digit 표현을 이용해 비교 정렬의 Ω(n log n) 하한을 우회한다. 대신 stability, key-range 검증, 추가 메모리, cache와 signed-key 변환이 새로운 정확성 계약이 된다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Heap</strong></td><td style="padding:7px;border:1px solid #bfdbfe">완전 이진 트리를 배열에 담고 부모·자식의 우선순위 관계를 지키는 자료구조. 메모리 할당 영역(heap)과 다른 말이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Complete binary tree</strong></td><td style="padding:7px;border:1px solid #bfdbfe">마지막 층을 제외하면 꽉 차고, 마지막 층은 왼쪽부터 채워진 트리. 포인터 없이 연속 배열로 표현할 수 있다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Max-heap</strong></td><td style="padding:7px;border:1px solid #bfdbfe">모든 부모 key가 자식 key 이상인 heap. 따라서 root가 전체 최댓값이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Sift-down</strong></td><td style="padding:7px;border:1px solid #bfdbfe">부모가 heap property를 어기면 더 큰 자식과 교환하며 아래로 내려가 관계를 복구하는 연산.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Heapify</strong></td><td style="padding:7px;border:1px solid #bfdbfe">무순서 배열을 heap으로 만드는 과정. 아래 내부 노드부터 sift-down하면 Θ(n)이다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Key universe/range</strong></td><td style="padding:7px;border:1px solid #bfdbfe">가능한 key 집합과 실제 최솟값~최댓값 폭. counting sort 비용을 n뿐 아니라 k=max−min+1이 결정한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Histogram</strong></td><td style="padding:7px;border:1px solid #bfdbfe">각 key 또는 digit이 몇 번 나타났는지 센 count 배열.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Prefix sum</strong></td><td style="padding:7px;border:1px solid #bfdbfe">앞에서부터 누적한 합. counting sort에서 각 key의 출력 구간 끝 위치를 만든다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Radix/Digit</strong></td><td style="padding:7px;border:1px solid #bfdbfe">수를 표현하는 밑(base)과 각 자리. base 256이면 1 digit은 8bit다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>LSD radix sort</strong></td><td style="padding:7px;border:1px solid #bfdbfe">Least Significant Digit, 즉 가장 낮은 자리부터 안정 정렬을 반복하는 방식.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Stable</strong></td><td style="padding:7px;border:1px solid #bfdbfe">동일 key 레코드의 기존 상대 순서를 보존하는 성질. LSD radix의 정당성에 필수다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe"><strong>Pseudopolynomial</strong></td><td style="padding:7px;border:1px solid #bfdbfe">입력 개수 n뿐 아니라 숫자의 값/범위 k에도 비례하는 비용. O(n+k)를 단순히 “선형”이라고만 부르면 위험하다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">2. 문제·입출력·제약 mental model</h2>
+          <div style="padding:14px;background:#172033;color:#dbeafe;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">Input:  records A[0:n), key(record)
+Output: key가 nondecreasing인 같은 identity multiset
+
+먼저 물을 것:
+- key는 comparator로만 볼 수 있는가, 고정 폭 정수인가?
+- min/max와 k=max-min+1을 신뢰할 수 있는가?
+- stable order가 API 계약인가?
+- worst latency와 aux-memory 상한은?
+- record가 커서 swap/copy 비용이 큰가?
+- 음수·overflow·variable length·malformed key는 어떻게 처리하는가?</div>
+          <p>세 알고리즘은 같은 “정렬” ADT를 구현하지만 전제가 다르다. 임의 객체와 comparator만 있으면 heapsort가 가능하다. counting/radix는 key의 내부 표현을 읽을 수 있어야 하며, 그 추가 정보가 빠른 시간의 대가다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">
+            <tr style="background:#dbeafe"><th style="padding:7px;border:1px solid #bfdbfe">조건</th><th style="padding:7px;border:1px solid #bfdbfe">우선 후보</th><th style="padding:7px;border:1px solid #bfdbfe">핵심 이유</th></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">worst bound + 작은 memory</td><td style="padding:7px;border:1px solid #bfdbfe">heapsort / intro fallback</td><td style="padding:7px;border:1px solid #bfdbfe">Θ(n log n), O(1) aux</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">작고 조밀한 integer range</td><td style="padding:7px;border:1px solid #bfdbfe">counting sort</td><td style="padding:7px;border:1px solid #bfdbfe">Θ(n+k), stable 가능</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">고정 폭 integer, 넓은 range</td><td style="padding:7px;border:1px solid #bfdbfe">radix sort</td><td style="padding:7px;border:1px solid #bfdbfe">Θ(d(n+b))</td></tr>
+            <tr><td style="padding:7px;border:1px solid #bfdbfe">stable + arbitrary object</td><td style="padding:7px;border:1px solid #bfdbfe">merge/Timsort 계열</td><td style="padding:7px;border:1px solid #bfdbfe">heap은 unstable, digit 접근 불가</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">3. Architecture/decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:34%;padding:12px;background:#2563eb;color:#fff;border-radius:8px"><strong>① Contract</strong></td><td style="padding:12px;background:#dbeafe">stable? comparator? worst bound? mutation atomicity?</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ key representation 공개 여부</td></tr>
+            <tr><td style="padding:12px;background:#1d4ed8;color:#fff;border-radius:8px"><strong>② Inspect</strong></td><td style="padding:12px;background:#dbeafe">n · min/max · signedness · bit width · distribution</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ checked range 계산 + memory budget</td></tr>
+            <tr><td style="padding:12px;background:#1e40af;color:#fff;border-radius:8px"><strong>③ Choose</strong></td><td style="padding:12px;background:#dbeafe">heap | count(offset) | radix(base/digits) | library hybrid</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ RI·stability·permutation 검증</td></tr>
+            <tr><td style="padding:12px;background:#1e3a8a;color:#fff;border-radius:8px"><strong>④ Execute</strong></td><td style="padding:12px;background:#dbeafe">bounded allocation · scratch reuse · cancel/failure policy</td></tr>
+            <tr><td align="center" colspan="2" style="color:#2563eb;font-weight:800">↓ 분포별 latency + memory + fallback 계측</td></tr>
+            <tr><td style="padding:12px;background:#172554;color:#fff;border-radius:8px"><strong>⑤ Operate</strong></td><td style="padding:12px;background:#dbeafe">range rejection·algorithm choice·p99·bytes moved</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">4. Sorting ADT와 representation invariant</h2>
+          <p><strong>공통 ADT:</strong> <code>sort(A,key)</code>의 사후조건은 ① 모든 i&lt;j에서 key(A[i])≤key(A[j]), ② 출력 identity multiset=입력 identity multiset이다. stable 계약이라면 ③ 같은 key의 입력 순서도 보존한다.</p>
+          <p><strong>Heapsort RI:</strong> active heap은 <code>A[0:h)</code>, sorted suffix는 <code>A[h:n)</code>다.</p>
+          <div style="padding:14px;background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">0-based: parent(i)=(i-1)//2, left=2i+1, right=2i+2
+
+heap:   모든 0&lt;i&lt;h 에 대해 A[parent(i)].key ≥ A[i].key
+suffix: A[h:n)은 nondecreasing이며, 그 모든 key ≥ A[0:h)의 모든 key</div>
+          <p><strong>Counting RI:</strong> histogram 뒤 <code>count[v]</code>는 key v의 빈도, prefix sum 뒤에는 key≤v의 개수다. 안정 배치 중 <code>count[v]</code>는 아직 채우지 않은 v 구간의 다음 오른쪽 경계를 가리킨다.</p>
+          <p><strong>LSD radix RI:</strong> t번 pass가 끝나면 배열은 하위 t개 digit을 key로 보았을 때 stable하게 정렬되어 있다. 다음 pass가 stable이어야 이전 digit 순서가 보존된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">5. Heapsort: build-heap은 왜 Θ(n)인가</h2>
+          <p>각 원소를 하나씩 insert하면 O(n log n)이지만, bottom-up heapify는 leaf를 건드리지 않고 마지막 내부 노드부터 sift-down한다. 높이 h인 노드는 최대 n/2<sup>h+1</sup>개이고 비용은 O(h)이므로 전체는 다음 수렴급수로 Θ(n)이다.</p>
+          <div style="padding:14px;background:#172033;color:#dbeafe;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">Σ(h≥0) (n / 2^(h+1)) · O(h) = O(n)
+
+Build:    for i=floor(n/2)-1 ... 0: siftDown(i,n)
+Sortdown: swap(A[0],A[h-1]); h--; siftDown(0,h)</div>
+          <p>sortdown은 n−1번 각각 O(log n)이므로 Θ(n log n). 전체 worst/average/best 모두 Θ(n log n), iterative 구현의 auxiliary space는 O(1)이다. 일반 heapsort는 unstable하다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">6. Heapsort 정당성</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Build:</strong> i의 두 자식 subtree는 이미 heap이다. sift-down이 i를 알맞은 경로로 내리면 i subtree도 heap이 된다. 역순 귀납으로 root 전체가 heap이다.</li>
+            <li><strong>Maximum:</strong> parent≥child를 root까지 따라가면 A[0]은 active heap의 최댓값이다.</li>
+            <li><strong>Extraction:</strong> root를 A[h−1]과 바꾸면 active maximum이 suffix 맨 앞에 놓인다. h를 줄이고 root만 sift-down하면 heap RI가 복구된다.</li>
+            <li><strong>Termination:</strong> h가 매번 1 감소한다. h=1이면 suffix와 남은 한 원소를 합친 전체 배열이 정렬되고 permutation은 swap만 했으므로 보존된다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>최소 불안정 반례:</strong> <code>[(2,a),(2,b),(1,x)]</code>를 max-heap sort하면 root extraction 과정에서 두 2의 상대 순서가 바뀔 수 있다. heap property는 key 관계만 보장하며 identity 순서는 표현 불변식에 없다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">7. Counting sort: 위치를 “비교”하지 않고 “센다”</h2>
+          <div style="padding:14px;background:#172033;color:#dbeafe;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;white-space:pre-wrap">def counting_sort(a, range_cap):
+    lo, hi = min(key(x) for x in a), max(key(x) for x in a)
+    k = checked_add(checked_sub(hi, lo), 1)
+    if k &gt; range_cap: raise RangeTooWide
+    count = [0] * k
+    for x in a: count[key(x) - lo] += 1
+    for i in range(1, k): count[i] += count[i-1]
+    out = [None] * len(a)
+    for x in reversed(a):           # stable의 핵심
+        i = key(x) - lo
+        count[i] -= 1
+        out[count[i]] = x
+    return out</div>
+          <p>음수 key는 <code>key−lo</code> offset으로 0-based slot에 옮긴다. cumulative count가 key별 출력 구간의 오른쪽 경계이고, 입력을 오른쪽부터 읽어 뒤쪽 동일 key부터 뒤쪽 slot에 놓으므로 상대 순서가 유지된다.</p>
+          <p><strong>복잡도:</strong> time Θ(n+k), stable output형 space Θ(n+k). k가 n과 같은 정도로 작을 때만 실질적 선형이다. <code>[0, 2³¹−1]</code> 두 원소는 n=2지만 k≈21억이라 그대로 allocation하면 장애가 된다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">8. LSD radix: stability를 귀납 가정으로 쓴다</h2>
+          <div style="padding:14px;background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">32-bit signed integer, base b=256
+biased = uint32(key) XOR 0x80000000
+for shift in [0, 8, 16, 24]:
+    stable_counting_pass((biased &gt;&gt; shift) &amp; 0xFF)</div>
+          <ol style="padding-left:22px">
+            <li><strong>Base:</strong> 첫 stable pass 뒤 8 low bits 순서로 정렬된다.</li>
+            <li><strong>Induction:</strong> 하위 t자리 순서가 맞다고 가정한다. t+1번째 자리로 stable 정렬하면 그 자리 값이 작은 그룹이 먼저 오고, 같은 그룹 안의 하위 t자리 순서는 유지된다.</li>
+            <li><strong>Conclusion:</strong> d개 자리 뒤 전체 key 순서가 맞다.</li>
+          </ol>
+          <p>time Θ(d(n+b)), extra space Θ(n+b). base를 키우면 pass d는 줄지만 count table이 cache를 더 차지한다. signed two's-complement는 단순 unsigned 순서와 다르므로 최상위 sign bit를 flip해 순서를 bias한다. 문자열은 길이·종료 문자의 정렬 의미를 먼저 정의해야 한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">9. 비교 정렬 Ω(n log n)과 “우회”의 정확한 의미</h2>
+          <p>서로 다른 n개 원소의 가능한 순열은 n!개다. 비교 한 번은 decision tree를 최대 두 갈래로 나누므로 높이는 최소 <code>log₂(n!)=Ω(n log n)</code>이다. Heapsort는 이 하한에 맞는다.</p>
+          <p>Counting/radix가 모순이 아닌 이유는 비교 결과만 보지 않고 key의 숫자 값·digit을 직접 주소 계산에 사용하기 때문이다. 계산 모델이 강해졌고 비용도 k, d, b, word width를 포함한다. “모든 정렬을 O(n)에 한다”가 아니다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">10. 시간·공간·stability·locality 비교</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#dbeafe"><th style="padding:6px;border:1px solid #bfdbfe">알고리즘</th><th style="padding:6px;border:1px solid #bfdbfe">시간</th><th style="padding:6px;border:1px solid #bfdbfe">aux</th><th style="padding:6px;border:1px solid #bfdbfe">stable</th><th style="padding:6px;border:1px solid #bfdbfe">locality/trade-off</th></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">heap</td><td style="padding:6px;border:1px solid #bfdbfe">Θ(n log n) worst</td><td style="padding:6px;border:1px solid #bfdbfe">O(1)</td><td style="padding:6px;border:1px solid #bfdbfe">아니오</td><td style="padding:6px;border:1px solid #bfdbfe">부모↔자식 jump, branch·cache 불리</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">count</td><td style="padding:6px;border:1px solid #bfdbfe">Θ(n+k)</td><td style="padding:6px;border:1px solid #bfdbfe">Θ(n+k)</td><td style="padding:6px;border:1px solid #bfdbfe">가능</td><td style="padding:6px;border:1px solid #bfdbfe">작은 count table이면 우수, sparse range 위험</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">LSD radix</td><td style="padding:6px;border:1px solid #bfdbfe">Θ(d(n+b))</td><td style="padding:6px;border:1px solid #bfdbfe">Θ(n+b)</td><td style="padding:6px;border:1px solid #bfdbfe">필수</td><td style="padding:6px;border:1px solid #bfdbfe">sequential pass, d번 전체 memory traffic</td></tr>
+          </table>
+          <p><strong>Expected/amortized:</strong> 세 분석의 핵심 bound는 확률적 기대나 상각이 아니라 deterministic worst bound다. 다만 runtime과 allocation은 실제 분포·range·base·implementation에 따라 달라진다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">11. 테스트 전략</h2>
+          <ol style="padding-left:22px">
+            <li><strong>공통 oracle:</strong> sortedness, identity permutation, reference sort 일치를 각각 검사한다.</li>
+            <li><strong>Exhaustive:</strong> heap은 n=0..8 모든 permutation을 대조하고 heap RI를 build/extract마다 assert한다.</li>
+            <li><strong>Stability:</strong> <code>(key, originalIndex)</code>로 counting/radix의 동률 index가 증가하는지 검사한다.</li>
+            <li><strong>Boundary:</strong> empty, one, all equal, negative, INT_MIN/MAX, k=cap과 cap+1, overflow 직전.</li>
+            <li><strong>Radix differential:</strong> signed/unsigned 변환, 각 pass 후 하위 digit RI, 다양한 base를 reference와 비교한다.</li>
+            <li><strong>Fault injection:</strong> allocation 실패, key extractor 예외, cancellation에서 원본 mutation·scratch 회수 계약을 검사한다.</li>
+          </ol>
+          <div style="padding:14px;background:#ecfdf5;border:1px solid #10b981;border-radius:10px"><strong>오늘 검증:</strong> Python 3.11.6에서 heapsort n≤8 전 순열, counting/radix duplicate stability, sortedness·identity permutation을 통과했다. k cap 초과 입력은 allocation 전에 <code>ValueError</code>로 거부됨을 확인했다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">12. Benchmark: n만 같아도 답은 다르다</h2>
+          <p>arm64 macOS 26.6.2, Python 3.11.6, n=65,536 <code>(key,identity)</code>, 고정 seed, 5회 중앙값. heap은 직접 구현, count는 k cap 1,000,000, radix는 base 256 × 4 stable pass다. 각 실행 후 correctness/stability를 별도로 검증했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
+            <tr style="background:#dbeafe"><th style="padding:6px;border:1px solid #bfdbfe">분포</th><th style="padding:6px;border:1px solid #bfdbfe">heap ms / C / swap</th><th style="padding:6px;border:1px solid #bfdbfe">count ms / writes</th><th style="padding:6px;border:1px solid #bfdbfe">radix ms / writes</th></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">byte 0..255</td><td style="padding:6px;border:1px solid #bfdbfe">464.834 / 1,891,042 / 987,104</td><td style="padding:6px;border:1px solid #bfdbfe">10.678 / 65,536</td><td style="padding:6px;border:1px solid #bfdbfe">84.708 / 262,144</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">signed −1000..1000</td><td style="padding:6px;border:1px solid #bfdbfe">381.165 / 1,894,352 / 989,818</td><td style="padding:6px;border:1px solid #bfdbfe">14.549 / 65,536</td><td style="padding:6px;border:1px solid #bfdbfe">104.101 / 262,144</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">random signed32</td><td style="padding:6px;border:1px solid #bfdbfe">471.368 / 1,894,812 / 990,152</td><td style="padding:6px;border:1px solid #bfdbfe">거부: k=4,294,913,176</td><td style="padding:6px;border:1px solid #bfdbfe">112.879 / 262,144</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">sorted consecutive</td><td style="padding:6px;border:1px solid #bfdbfe">338.733 / 1,948,406 / 1,034,492</td><td style="padding:6px;border:1px solid #bfdbfe">15.130 / 65,536</td><td style="padding:6px;border:1px solid #bfdbfe">66.791 / 262,144</td></tr>
+          </table>
+          <p><strong>해석:</strong> counting은 좁은 range에서 강하지만 signed32 random은 cap으로 안전하게 거부했다. radix는 key 범위와 무관하게 4 pass지만 매번 n개 record를 쓴다. heap은 입력 순서에 대한 worst bound는 강하지만 많은 비교·비연속 접근 때문에 이 구현의 wall time은 컸다.</p>
+          <p><strong>Benchmark 주의:</strong> Python 숫자는 boxed object이며 JIT 없는 interpreter 비용이 크다. 이 숫자를 C/Java 서비스에 복사하지 말고, 실제 record width·key extraction·NUMA·cache·GC·scratch reuse를 포함해 warm-up 뒤 p50/p95/p99, peak RSS, bytes moved를 측정한다. validation과 input copy 시간을 측정 구간과 분리한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">13. Memory와 locality</h2>
+          <ul style="padding-left:22px">
+            <li>Heap은 배열이 연속이어도 parent→child index가 지수적으로 벌어져 sortdown 후반의 cache locality와 branch prediction이 불리하다.</li>
+            <li>Counting은 count table이 L1/L2에 들어가면 좋지만 k가 커지면 zero-fill·page fault·cache/TLB miss가 n보다 지배적일 수 있다.</li>
+            <li>Radix는 sequential scan이라 prefetch에 유리하지만 매 pass 입력과 출력 n개를 왕복한다. 큰 record 대신 index/pointer를 정렬하면 bytes moved를 줄일 수 있다.</li>
+            <li>Scratch buffer를 요청마다 새로 할당하지 말고 size cap이 있는 pool/thread-local reuse를 검토하되, 거대한 buffer retention과 민감 데이터 잔존을 관리한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">14. Error handling과 failure semantics</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#dbeafe"><th style="padding:6px;border:1px solid #bfdbfe">실패</th><th style="padding:6px;border:1px solid #bfdbfe">위험</th><th style="padding:6px;border:1px solid #bfdbfe">대응</th></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">hi−lo+1 overflow</td><td style="padding:6px;border:1px solid #bfdbfe">작은 allocation 뒤 OOB</td><td style="padding:6px;border:1px solid #bfdbfe">wider/checked arithmetic, allocate 전 cap</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">sparse huge range</td><td style="padding:6px;border:1px solid #bfdbfe">OOM·latency spike</td><td style="padding:6px;border:1px solid #bfdbfe">k/n·byte budget 기준 거부, radix/library fallback</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">음수/sign 처리 누락</td><td style="padding:6px;border:1px solid #bfdbfe">잘못된 순서/OOB</td><td style="padding:6px;border:1px solid #bfdbfe">offset 또는 sign-bit bias, boundary tests</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">unstable radix pass</td><td style="padding:6px;border:1px solid #bfdbfe">이전 digit 순서 파괴</td><td style="padding:6px;border:1px solid #bfdbfe">stable scatter RI와 pass별 differential test</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">allocation/key 예외</td><td style="padding:6px;border:1px solid #bfdbfe">partial mutation·leak</td><td style="padding:6px;border:1px solid #bfdbfe">out-of-place build 후 commit, scratch finally 반환</td></tr>
+            <tr><td style="padding:6px;border:1px solid #bfdbfe">concurrent mutation</td><td style="padding:6px;border:1px solid #bfdbfe">RI·permutation 붕괴</td><td style="padding:6px;border:1px solid #bfdbfe">exclusive ownership 또는 immutable snapshot</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">15. 실무 best practice와 anti-pattern</h2>
+          <p><strong>Best practice</strong></p>
+          <ul style="padding-left:22px">
+            <li>검증된 표준 library sort를 기본값으로 두고, 실제 profile이 병목을 보일 때 specialized path를 추가한다.</li>
+            <li>counting 전 min/max를 한 번 scan하고 checked k, 최대 bytes, k/n ratio를 모두 검사한다. 정책 결과를 metric으로 남긴다.</li>
+            <li>radix는 bit width·signedness·endianness와 stability를 API/테스트에 고정하고 base는 cache와 pass 수를 benchmark해 정한다.</li>
+            <li>quicksort 계열의 depth/bad-partition budget이 소진될 때 heapsort를 fallback으로 써 worst latency를 봉쇄한다.</li>
+            <li>큰 record는 key+index를 정렬하고 최종 permutation을 적용하며, scratch 재사용에는 상한을 둔다.</li>
+            <li>OpenJDK처럼 type·size·run 패턴별로 heap/counting/insertion/merge 경로를 고르는 hybrid는 threshold를 workload와 하드웨어에 맞게 재검증한다.</li>
+          </ul>
+          <p><strong>Anti-pattern</strong></p>
+          <ul style="padding-left:22px">
+            <li><strong>O(n)만 홍보:</strong> counting의 k, radix의 d·b와 memory traffic을 숨긴다.</li>
+            <li><strong>range 검증 뒤 또 scan하지 않음:</strong> concurrent mutation이나 TOCTOU로 key가 범위를 벗어난다.</li>
+            <li><strong>in-place counting을 무조건 선택:</strong> record stability와 identity 보존을 쉽게 깨뜨린다.</li>
+            <li><strong>radix pass를 불안정하게 구현:</strong> 마지막 digit만 정렬된 듯 보이는 조용한 데이터 오류가 난다.</li>
+            <li><strong>heapsort가 O(1)이니 항상 빠르다:</strong> 비교 수·swap·cache locality와 큰 record 이동을 무시한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">16. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q1. Bottom-up build-heap이 왜 O(n log n)이 아니라 Θ(n)인가요?</strong><br>대부분의 노드는 leaf 근처라 내려갈 높이가 작다. 높이 h 노드는 최대 n/2<sup>h+1</sup>개이므로 비용 합 Σ n·h/2<sup>h+1</sup>가 O(n)으로 수렴하고, 배열을 읽어야 하므로 Ω(n)이다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#dbeafe;border-radius:10px"><strong>Q2. Counting sort가 Ω(n log n) 하한을 어떻게 깨나요?</strong><br>그 하한은 comparison decision tree 모델에만 적용된다. Counting은 정수 값을 직접 index로 사용해 더 강한 연산을 허용하고 Θ(n+k) 시간·Θ(n+k) 공간을 지불한다. k가 크면 더 나쁘거나 실행 불가능하다.</div>
+          <div style="padding:16px;background:#dbeafe;border-radius:10px"><strong>Q3. LSD radix에서 stable pass가 왜 필수이며 signed int는 어떻게 처리하나요?</strong><br>상위 digit이 같은 그룹에서 이전 하위 digit 순서를 보존해야 귀납이 성립한다. 32-bit two's-complement는 uint32로 본 뒤 sign bit를 XOR해 음수 구간이 양수보다 앞서도록 bias하고, 8bit digit을 stable counting pass한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">17. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>heapsort의 active heap과 sorted suffix RI를 한 줄씩 써라.</li>
+            <li>bottom-up heapify의 높이별 비용 합을 직접 전개하라.</li>
+            <li>counting에서 reverse scan을 forward scan으로 바꾸면 어떤 최소 입력에서 stability가 깨지는가?</li>
+            <li>n=2, key=[0,2³¹−1]가 왜 “선형 정렬”의 반례 같은 운영 사고를 만드는가?</li>
+            <li>LSD 2-pass 정당성을 induction으로 설명하고 unstable pass 반례를 만들어라.</li>
+            <li>Day 38 merge, Day 39 quick, 오늘 heap/count/radix를 stable·worst·aux·locality로 비교하라.</li>
+          </ol>
+          <div style="padding:15px;background:#eff6ff;border-radius:10px"><strong>누적 리뷰 답변 골격:</strong> “더 빠른 정렬”이 아니라 <em>key 모델 → ADT/stability 계약 → RI와 proof → n·k·d·b/space → distribution·locality benchmark → range/failure guardrail</em> 순서로 선택을 방어한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">18. 다음 날 연결</h2>
+          <p>Day 41은 <strong>랩: 데이터 분포별 정렬 benchmark</strong>다. random만 재지 않고 sorted/reverse/few-distinct/Zipf/sparse-range/large-record를 만들고, comparison·move·allocation·peak RSS·p99를 같이 측정해 선택 정책을 코드로 만든다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#1d4ed8">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/resources/lecture-notes/" style="color:#1d4ed8">MIT 6.006 · Lecture Notes</a> — Lecture 4 heap/heapsort, Lecture 7 counting/radix와 comparison lower bound.</li>
+            <li><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/resources/mit6_006f11_lec07_orig/" style="color:#1d4ed8">MIT 6.006 · Linear-time sorting lecture</a> — counting sort, radix sort와 key 범위 기반 분석.</li>
+            <li><a href="https://live.ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/cb7df5fee9cb62e0810616491cdd1194_MIT6_006F11_rec07.pdf" style="color:#1d4ed8">MIT 6.006 · Recitation 7</a> — comparison lower bound와 linear-time sorting 연습.</li>
+            <li><a href="https://algs4.cs.princeton.edu/24pq/" style="color:#1d4ed8">Princeton Algorithms · Priority Queues/Heapsort</a> — heap representation, bottom-up construction, sortdown과 in-place 특성.</li>
+            <li><a href="https://docs.python.org/3/library/heapq.html" style="color:#1d4ed8">Python heapq documentation</a> — 0-based 배열 heap invariant와 index 관계.</li>
+            <li><a href="https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/util/DualPivotQuicksort.java" style="color:#1d4ed8">OpenJDK DualPivotQuicksort source</a> — quadratic guard의 heap fallback, primitive type별 counting sort와 run merge를 결합한 production hybrid.</li>
+          </ul>
+          <p style="margin-top:26px;padding-top:18px;border-top:1px solid #cbd5e1;color:#64748b;font-size:12px">실습 체크: heap RI → bottom-up proof → stable count + cap → signed radix → 전수/경계 test → 분포별 time/C/swap/write/memory.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
