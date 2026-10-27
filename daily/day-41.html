@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DS&amp;A Day 41 · 랩: 데이터 분포별 정렬 benchmark</title>
+</head>
+<body style="margin:0;background:#052e2b;color:#172033;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.72">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#052e2b">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#f8fafc;border-radius:20px;overflow:hidden">
+        <tr><td style="padding:34px;background:#0f766e;color:#ecfdf5">
+          <div style="color:#99f6e4;font-size:12px;font-weight:800;letter-spacing:2px">DATA STRUCTURES × ALGORITHMS · WEEK 6 / DAY 41 · LAB</div>
+          <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.2">정렬 benchmark의 입력은<br>크기가 아니라 분포까지다</h1>
+          <p style="margin:0;color:#ccfbf1">experimental contract · distribution matrix · warm-up · interleaving · oracle · noise · 240분</p>
+        </td></tr>
+        <tr><td style="padding:30px 34px">
+          <div style="padding:18px;border-left:5px solid #0d9488;background:#ccfbf1;border-radius:10px"><strong>한 줄 요약</strong><br>정렬의 승자는 알고리즘 이름 하나가 아니라 <strong>분포·key 범위·기존 run·중복도·record 폭·측정 계약</strong>의 함수다. 정확성을 먼저 검증하고 setup을 분리하며, warm-up·무작위 interleaving·반복·원시 표본을 남겨야 결과를 production 결정에 쓸 수 있다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">1. 초보자를 위한 용어 사전</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:13px">
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Benchmark</strong></td><td style="padding:7px;border:1px solid #99f6e4">고정한 조건에서 성능을 반복 측정하는 실험. stopwatch 한 번과 다르다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Workload</strong></td><td style="padding:7px;border:1px solid #99f6e4">입력과 연산의 조합. n, 분포, 중복도, 기존 순서, record 폭을 포함한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Distribution</strong></td><td style="padding:7px;border:1px solid #99f6e4">값이 나타나는 모양. uniform, hot-key, few-distinct, sorted가 내부 실행 경로를 바꾼다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Warm-up</strong></td><td style="padding:7px;border:1px solid #99f6e4">cache·JIT·lazy initialization이 안정되도록 측정 전에 실행하고 결과는 버리는 구간.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Measurement window</strong></td><td style="padding:7px;border:1px solid #99f6e4">timer 안에 포함한 범위. copy·allocation·validation 포함 여부를 명시한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>p50/p95/p99</strong></td><td style="padding:7px;border:1px solid #99f6e4">표본의 50/95/99%가 이하인 percentile. 9개 표본으로 p99를 주장할 수 없다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>CV</strong></td><td style="padding:7px;border:1px solid #99f6e4">coefficient of variation=표준편차/평균. 단위 없는 변동성 지표다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Interleaving</strong></td><td style="padding:7px;border:1px solid #99f6e4">A 전부 뒤 B 전부가 아니라 실행 순서를 섞어 온도·부하의 순서 편향을 줄이는 방법.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Oracle</strong></td><td style="padding:7px;border:1px solid #99f6e4">결과 정답을 판정하는 기준. sortedness뿐 아니라 permutation과 stability도 검사한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Dead-code elimination</strong></td><td style="padding:7px;border:1px solid #99f6e4">사용하지 않는 계산을 compiler가 제거하는 최적화. 결과 소비를 보장해야 한다.</td></tr>
+            <tr><td style="padding:7px;border:1px solid #99f6e4"><strong>Effect size</strong></td><td style="padding:7px;border:1px solid #99f6e4">차이가 얼마나 큰지를 나타내는 값. 통계적 유의성과 실무 의미는 다르다.</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">2. 문제·입출력·제약 mental model</h2>
+          <div style="padding:14px;background:#172033;color:#ccfbf1;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap">Input:  algorithms A, distributions D, sizes N, repetitions R, seed S
+Output: raw samples + statistics + correctness + metadata
+
+실험 전에 고정할 것:
+- timer 안: copy? allocation? key extraction? validation?
+- 같은 dataset snapshot을 비교하는가?
+- stable/in-place/failure semantics가 같은가?
+- CPU·OS·runtime·compiler·flags·seed를 기록했는가?
+- 목표는 p50 throughput, p99 latency, peak memory 중 무엇인가?</div>
+          <p>“n=32,768 정렬”은 workload 정의가 아니다. sorted 32,768개와 full-range random 32,768개는 Timsort의 run 탐지, counting의 k, quicksort의 partition, radix의 pass 경로를 다르게 자극한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">3. Architecture/decision flow</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:separate;border-spacing:0 7px">
+            <tr><td style="width:34%;padding:12px;background:#14b8a6;color:#fff;border-radius:8px"><strong>① Question</strong></td><td style="padding:12px;background:#ccfbf1">어떤 production 결정을 내릴 것인가?</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ metric·SLO·correctness 계약</td></tr>
+            <tr><td style="padding:12px;background:#0d9488;color:#fff;border-radius:8px"><strong>② Matrix</strong></td><td style="padding:12px;background:#ccfbf1">n × 분포 × key range × record width × algorithm</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ fixed seed + independent snapshot</td></tr>
+            <tr><td style="padding:12px;background:#0f766e;color:#fff;border-radius:8px"><strong>③ Harness</strong></td><td style="padding:12px;background:#ccfbf1">warm-up → randomized order → timed kernel → oracle</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ raw samples + environment + counters</td></tr>
+            <tr><td style="padding:12px;background:#115e59;color:#fff;border-radius:8px"><strong>④ Diagnose</strong></td><td style="padding:12px;background:#ccfbf1">noise·cache·comparison·moves·allocation·rejection</td></tr>
+            <tr><td align="center" colspan="2" style="color:#0f766e;font-weight:800">↓ effect size + operational guardrail</td></tr>
+            <tr><td style="padding:12px;background:#134e4a;color:#fff;border-radius:8px"><strong>⑤ Decide</strong></td><td style="padding:12px;background:#ccfbf1">default library + specialized fast path + fallback</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">4. Benchmark ADT와 representation invariant</h2>
+          <p><strong>ADT:</strong> <code>measure(algorithm,dataset,config)</code>는 원시 duration 배열, correctness, 실패/거부 사유, 환경 metadata를 반환한다. 결과는 알고리즘의 “고유 속도”가 아니라 이 config의 관측치다.</p>
+          <ul style="padding-left:22px">
+            <li><strong>Input RI:</strong> 같은 cell의 알고리즘은 동일 seed의 같은 value multiset을 받는다.</li>
+            <li><strong>Isolation RI:</strong> 각 실행은 독립 copy에서 시작하고 이전 mutation을 공유하지 않는다.</li>
+            <li><strong>Window RI:</strong> timer 경계가 모두 같다. 오늘은 input copy·validation은 밖, 내부 allocation·commit은 안이다.</li>
+            <li><strong>Correctness RI:</strong> 기록 표본은 reference와 같아야 한다. 오답은 빠른 값으로 집계하지 않는다.</li>
+            <li><strong>Trace RI:</strong> seed·n·분포·runtime·OS·warm-up·반복 수와 원시 표본을 남긴다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">5. 분포 matrix: 이름이 아니라 생성 규칙</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#ccfbf1"><th style="padding:6px;border:1px solid #99f6e4">분포</th><th style="padding:6px;border:1px solid #99f6e4">생성 규칙</th><th style="padding:6px;border:1px solid #99f6e4">자극하는 경로</th></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">random32</td><td style="padding:6px;border:1px solid #99f6e4">signed 32-bit uniform</td><td style="padding:6px;border:1px solid #99f6e4">comparison 일반 case, counting huge k</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">sorted/reverse</td><td style="padding:6px;border:1px solid #99f6e4">0..n−1 / 역순</td><td style="padding:6px;border:1px solid #99f6e4">adaptive run, naive quick worst</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">1% adjacent</td><td style="padding:6px;border:1px solid #99f6e4">sorted 뒤 n/100 인접 swap</td><td style="padding:6px;border:1px solid #99f6e4">낮은 inversion·자연 run</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">16 keys</td><td style="padding:6px;border:1px solid #99f6e4">uniform key∈[0,15]</td><td style="padding:6px;border:1px solid #99f6e4">duplicate policy·counting</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">90% hot</td><td style="padding:6px;border:1px solid #99f6e4">0이 90%, 나머지 1..1023</td><td style="padding:6px;border:1px solid #99f6e4">skew·equal band·small range</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">organ-pipe</td><td style="padding:6px;border:1px solid #99f6e4">증가 후 대칭 감소</td><td style="padding:6px;border:1px solid #99f6e4">pivot heuristic·run 탐지</td></tr>
+          </table>
+          <p>production trace를 그대로 쓰기 어렵다면 cardinality, inversion density, run-length histogram, min/max, top-key frequency를 추출해 synthetic generator parameter로 보존한다. 개인정보와 원문 key는 넣지 않는다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">6. 직접 구현한 harness</h2>
+          <div style="padding:14px;background:#172033;color:#ccfbf1;border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;white-space:pre-wrap">expected = {d: sorted(base[d]) for d in distributions}
+samples = {(d, a): [] for d in D for a in A}
+
+# warm-up은 버리되 correctness는 검사
+for d in D:
+    for a in A:
+        work = list(base[d])
+        try:
+            algorithm[a](work)
+            assert work == expected[d]
+        except RangeTooWide as e:
+            rejected[d, a] = str(e)
+
+for repetition in range(R):
+    jobs = [(d,a) for d in D for a in A if (d,a) not in rejected]
+    rng.shuffle(jobs)                 # 순서 편향 완화
+    for d, a in jobs:
+        work = list(base[d])          # setup: timer 밖
+        t0 = perf_counter_ns()
+        algorithm[a](work)            # allocation/commit: timer 안
+        elapsed = perf_counter_ns() - t0
+        assert work == expected[d]    # oracle: timer 밖
+        samples[d,a].append(elapsed)</div>
+          <p>컴파일 언어/JVM에서는 결과 제거를 막기 위해 Google Benchmark의 <code>DoNotOptimize</code>나 JMH <code>Blackhole</code> 같은 harness 기능을 쓴다. volatile을 무작정 쓰면 다른 최적화를 왜곡한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">7. Correctness proof와 최소 반례</h2>
+          <ol style="padding-left:22px">
+            <li><strong>Initialization:</strong> 고정 seed의 immutable base와 reference sort를 timer 밖에서 만든다.</li>
+            <li><strong>Maintenance:</strong> 각 job은 base copy만 변경하므로 다음 job의 입력 RI가 보존된다. shuffled schedule은 각 label이 시간대 전체에 섞이게 한다.</li>
+            <li><strong>Validation:</strong> elapsed를 기록한 뒤 reference·identity·stability 계약을 검사한다. 실패 표본은 성능 결론에 포함하지 않는다.</li>
+            <li><strong>Termination:</strong> 유한한 D×A×R job을 모두 수행하면 각 허용 cell에 정확히 R개 표본이 있다.</li>
+          </ol>
+          <div style="padding:16px;background:#fee2e2;border:1px solid #ef4444;border-radius:10px"><strong>최소 잘못된 benchmark:</strong> A는 <code>sorted(copy)</code>를 timer 안에 넣고 B는 이미 만든 배열을 in-place sort하면 A만 allocation/copy 비용을 낸다. 차이는 정렬이 아니라 window 차이다. 또 A를 항상 먼저 재면 thermal drift가 algorithm label과 결합된다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">8. 시간·공간·amortized 분석</h2>
+          <p>D개 분포, A개 알고리즘, R회 반복에서 총 작업은 <code>Σ(D,A) R·(Θ(n) copy + T<sub>A,D</sub>(n))</code>, 저장 표본은 Θ(DAR)이다. reference는 분포별 O(n log n), snapshot memory는 Θ(Dn)이다.</p>
+          <ul style="padding-left:22px">
+            <li>평균/기대/amortized 분석과 표본 통계는 다른 층이다. 기대 Θ(n log n)이 한 host의 9회 평균을 뜻하지 않는다.</li>
+            <li>작은 kernel은 timer와 harness overhead가 지배한다. 여러 iteration을 batch하고 empty baseline을 잰다.</li>
+            <li>표본 수를 늘려도 잘못된 window, 다른 입력, dead-code elimination 같은 systematic bias는 사라지지 않는다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">9. 오늘의 실측</h2>
+          <p>arm64 macOS 26.6.2, Python 3.11.6, n=32,768, seed 20261019. builtin Timsort와 직접 구현 heap·bottom-up merge·count(cap 1,000,000)·signed32 radix(base 256×4)를 warm-up 1회 후 9회 무작위 interleaving했다. 아래는 ms 중앙값이며 copy/검증은 제외, 내부 allocation/commit은 포함했다.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:10px">
+            <tr style="background:#ccfbf1"><th style="padding:6px;border:1px solid #99f6e4">분포</th><th style="padding:6px;border:1px solid #99f6e4">builtin</th><th style="padding:6px;border:1px solid #99f6e4">heap</th><th style="padding:6px;border:1px solid #99f6e4">merge</th><th style="padding:6px;border:1px solid #99f6e4">count</th><th style="padding:6px;border:1px solid #99f6e4">radix</th></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">random32</td><td style="padding:6px;border:1px solid #99f6e4">5.311</td><td style="padding:6px;border:1px solid #99f6e4">59.592</td><td style="padding:6px;border:1px solid #99f6e4">37.881</td><td style="padding:6px;border:1px solid #99f6e4">거부</td><td style="padding:6px;border:1px solid #99f6e4">29.512</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">sorted</td><td style="padding:6px;border:1px solid #99f6e4">0.081</td><td style="padding:6px;border:1px solid #99f6e4">52.445</td><td style="padding:6px;border:1px solid #99f6e4">10.018</td><td style="padding:6px;border:1px solid #99f6e4">4.040</td><td style="padding:6px;border:1px solid #99f6e4">25.843</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">reverse</td><td style="padding:6px;border:1px solid #99f6e4">0.089</td><td style="padding:6px;border:1px solid #99f6e4">47.584</td><td style="padding:6px;border:1px solid #99f6e4">24.801</td><td style="padding:6px;border:1px solid #99f6e4">4.264</td><td style="padding:6px;border:1px solid #99f6e4">25.781</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">1% adjacent</td><td style="padding:6px;border:1px solid #99f6e4">0.147</td><td style="padding:6px;border:1px solid #99f6e4">50.694</td><td style="padding:6px;border:1px solid #99f6e4">10.079</td><td style="padding:6px;border:1px solid #99f6e4">4.088</td><td style="padding:6px;border:1px solid #99f6e4">26.507</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">16 keys</td><td style="padding:6px;border:1px solid #99f6e4">1.828</td><td style="padding:6px;border:1px solid #99f6e4">47.218</td><td style="padding:6px;border:1px solid #99f6e4">34.249</td><td style="padding:6px;border:1px solid #99f6e4">1.959</td><td style="padding:6px;border:1px solid #99f6e4">25.742</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">90% hot</td><td style="padding:6px;border:1px solid #99f6e4">0.953</td><td style="padding:6px;border:1px solid #99f6e4">11.085</td><td style="padding:6px;border:1px solid #99f6e4">33.330</td><td style="padding:6px;border:1px solid #99f6e4">2.315</td><td style="padding:6px;border:1px solid #99f6e4">26.584</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">organ-pipe</td><td style="padding:6px;border:1px solid #99f6e4">0.151</td><td style="padding:6px;border:1px solid #99f6e4">49.643</td><td style="padding:6px;border:1px solid #99f6e4">18.533</td><td style="padding:6px;border:1px solid #99f6e4">2.892</td><td style="padding:6px;border:1px solid #99f6e4">25.366</td></tr>
+          </table>
+          <p><strong>정확성:</strong> 315개 측정 실행과 35개 warm-up 결과를 reference와 대조했다. random32 counting은 k=4,294,661,941로 cap을 넘어서 allocation 전에 거부했다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">10. 해석: 숫자보다 경로를 설명하라</h2>
+          <ul style="padding-left:22px">
+            <li>Builtin은 C 구현과 Timsort run 적응을 함께 얻어 sorted/reverse/nearly-sorted에서 random32보다 약 36~66배 낮은 중앙값이었다.</li>
+            <li>Counting은 16-key에서 builtin과 비슷했지만 full signed32는 거부됐다. O(n+k)의 k가 실제 의사결정 변수다.</li>
+            <li>90% hot heap은 16-key heap보다 빨랐다. 동일 key가 많아 sift-down 비교가 일찍 끝나는 경로가 생겼다.</li>
+            <li>직접 Python loop와 C builtin의 절대 시간을 알고리즘 차이만으로 해석하면 안 된다. production 언어·library에서 다시 잰다.</li>
+          </ul>
+          <div style="padding:14px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px"><strong>Noise 발견:</strong> 9회 표본의 CV가 0.487~1.784였고 일부 최대값은 중앙값의 여러 배였다. 이 실험의 p95 후보는 사실상 최대값이라 tail SLO 근거가 아니다. background load를 격리하고 표본을 늘려야 하며, 오늘 결과는 경로 학습용 smoke benchmark다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">11. Memory/locality와 counter</h2>
+          <ul style="padding-left:22px">
+            <li>시간이 달라지면 comparisons, swaps/writes, allocated bytes, branch/cache miss 중 무엇이 변했는지 가설을 세운다.</li>
+            <li>Heap은 O(1) aux지만 부모↔자식 jump와 swap이 많다. Merge/radix는 sequential access가 좋지만 Θ(n) scratch와 반복 memory traffic이 있다.</li>
+            <li>Counting count table이 cache를 벗어나면 k zero-fill과 counter access가 지배한다.</li>
+            <li>Google Benchmark는 user counter, memory manager, PMU counter를 결과와 함께 기록할 수 있다. profiling overhead가 크면 timing run과 분리한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">12. 통계와 benchmark 주의점</h2>
+          <ul style="padding-left:22px">
+            <li>원시 표본, median, IQR/CV, min/max를 함께 보존한다. outlier를 지우려면 사전 규칙과 원인을 기록한다.</li>
+            <li>baseline/candidate를 시간 순서로 분리하지 말고 무작위 interleaving 또는 paired execution을 쓴다.</li>
+            <li>유의성 검정 전 독립성·표본 수·다중 비교를 검토하고 ratio/절대 ms 같은 effect size와 SLO를 함께 본다.</li>
+            <li>Google Benchmark 비교 도구도 Mann–Whitney U test는 반복이 9회 미만이면 의미 없다고 경고한다. 9회가 충분하다는 뜻은 아니다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">13. Error handling과 failure semantics</h2>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:11px">
+            <tr style="background:#ccfbf1"><th style="padding:6px;border:1px solid #99f6e4">실패</th><th style="padding:6px;border:1px solid #99f6e4">왜곡</th><th style="padding:6px;border:1px solid #99f6e4">대응</th></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">wrong output</td><td style="padding:6px;border:1px solid #99f6e4">빠른 오답이 우승</td><td style="padding:6px;border:1px solid #99f6e4">모든 표본 뒤 oracle, 성능 집계 금지</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">OOM/range overflow</td><td style="padding:6px;border:1px solid #99f6e4">host thrash·crash</td><td style="padding:6px;border:1px solid #99f6e4">checked k·byte cap·fallback</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">timer anomaly</td><td style="padding:6px;border:1px solid #99f6e4">0/clock jump</td><td style="padding:6px;border:1px solid #99f6e4">monotonic high-resolution clock</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">thermal/load drift</td><td style="padding:6px;border:1px solid #99f6e4">label confounding</td><td style="padding:6px;border:1px solid #99f6e4">interleave, load metadata, isolated rerun</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">timeout</td><td style="padding:6px;border:1px solid #99f6e4">느린 case가 사라짐</td><td style="padding:6px;border:1px solid #99f6e4">censored/timeout으로 명시</td></tr>
+            <tr><td style="padding:6px;border:1px solid #99f6e4">partial artifact</td><td style="padding:6px;border:1px solid #99f6e4">재현 불가</td><td style="padding:6px;border:1px solid #99f6e4">temp 후 atomic rename·schema version</td></tr>
+          </table>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">14. 실무 best practice와 anti-pattern</h2>
+          <p><strong>Best practice</strong></p>
+          <ul style="padding-left:22px">
+            <li>검증된 library sort를 기본값으로 두고 profile이 확인한 병목에만 specialized path를 추가한다.</li>
+            <li>benchmark config를 version-control하고 JSON/CSV 원시 결과와 environment fingerprint를 artifact로 남긴다.</li>
+            <li>functional test와 benchmark를 분리하되 benchmark에도 lightweight oracle을 유지한다.</li>
+            <li>PR gate는 noise floor보다 큰 회귀만 막고 전용 host 추세와 production telemetry로 재확인한다.</li>
+            <li>fast path 거부/실패 시 안전한 library fallback과 선택·fallback metric을 둔다.</li>
+          </ul>
+          <p><strong>Anti-pattern</strong></p>
+          <ul style="padding-left:22px">
+            <li>한 번 실행하고 승자를 선언한다.</li>
+            <li>random 입력 하나로 adaptive·duplicate·range·adversarial 경로를 숨긴다.</li>
+            <li>setup 차이와 sort 차이를 섞는다.</li>
+            <li>평균만 보고 bimodal·tail·outlier를 감춘다.</li>
+            <li>microbenchmark를 production p99·concurrency·NUMA 결과로 일반화한다.</li>
+          </ul>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">15. 대기업 면접 질문 3개와 답변 포인트</h2>
+          <div style="margin-bottom:12px;padding:16px;background:#ccfbf1;border-radius:10px"><strong>Q1. 정렬 benchmark가 공정하다는 것을 어떻게 증명하나요?</strong><br>동일 seed/snapshot, 독립 copy, 동일 timer boundary, randomized order, warm-up, correctness oracle과 환경 metadata라는 RI를 제시한다. 원시 표본과 실패도 남긴다.</div>
+          <div style="margin-bottom:12px;padding:16px;background:#ccfbf1;border-radius:10px"><strong>Q2. 평균 10% 개선이면 배포하나요?</strong><br>paired ratio·noise floor·effect size·분포를 보고 target workload의 p95/p99·memory·correctness를 확인한다. 전용 host와 canary telemetry로 재검증한다.</div>
+          <div style="padding:16px;background:#ccfbf1;border-radius:10px"><strong>Q3. Counting sort가 빠른데 기본값으로 쓰지 않는 이유는?</strong><br>Θ(n+k)에서 k가 untrusted하면 overflow/OOM·cache blow-up이 난다. checked range·byte cap 아래 fast path로만 쓰고 library/radix fallback을 둔다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">16. 퀴즈·누적 리뷰</h2>
+          <ol style="padding-left:22px">
+            <li>오늘 harness의 다섯 RI를 timer 경계까지 포함해 말하라.</li>
+            <li>9개 표본으로 p99를 주장할 수 없는 이유를 순위 관점에서 설명하라.</li>
+            <li>sorted와 random32 builtin 중앙값 차이를 실행 경로로 설명하라.</li>
+            <li>counting random32를 “느림”이 아니라 “거부”로 기록한 이유는?</li>
+            <li>comparison 수가 줄어도 시간이 늘 수 있는 locality 원인 3개는?</li>
+            <li>Day 36~40의 stable·adaptive·worst·range 계약을 오늘 matrix에 연결하라.</li>
+          </ol>
+          <div style="padding:15px;background:#ecfdf5;border-radius:10px"><strong>누적 리뷰 답변 골격:</strong> <em>production 질문 → workload 분포 → 알고리즘 계약/RI → fair window/oracle → raw samples+counters → noise/effect size → guarded choice+fallback</em> 순서로 방어한다.</div>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">17. 다음 날 연결</h2>
+          <p>Day 42는 <strong>리뷰: 비교 정렬 하한과 실무 선택</strong>이다. stable/in-place/adaptive, insertion/merge/quick/heap/count/radix와 오늘 실측을 하나의 decision tree로 압축해 면접 답변을 연습한다.</p>
+
+          <h2 style="margin:30px 0 12px;color:#0f766e">출처</h2>
+          <ul style="padding-left:22px;font-size:13px">
+            <li><a href="https://ocw.mit.edu/courses/6-172-performance-engineering-of-software-systems-fall-2018/resources/lecture-10-measurement-and-timing/" style="color:#0f766e">MIT 6.172 · Measurement and Timing</a> — 신뢰할 수 있는 timing과 잘못된 측정 요인.</li>
+            <li><a href="https://github.com/google/benchmark/blob/main/docs/user_guide.md" style="color:#0f766e">Google Benchmark · User Guide</a> — warm-up, repetitions, random interleaving, statistics, JSON, counters와 memory reporting.</li>
+            <li><a href="https://github.com/google/benchmark/blob/main/docs/tools.md" style="color:#0f766e">Google Benchmark · Tools</a> — baseline 비교와 Mann–Whitney U test 반복 수 주의.</li>
+            <li><a href="https://github.com/openjdk/jmh" style="color:#0f766e">OpenJDK JMH</a> — JVM microbenchmark harness와 generated benchmark code.</li>
+            <li><a href="https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples" style="color:#0f766e">OpenJDK JMH Samples</a> — baseline, state, Blackhole, dead-code/JIT 함정.</li>
+            <li><a href="https://docs.python.org/3/library/timeit.html" style="color:#0f766e">Python timeit documentation</a> — 반복, timer, GC와 결과 해석.</li>
+            <li><a href="https://github.com/python/cpython/blob/main/Objects/listsort.txt" style="color:#0f766e">CPython listsort design</a> — Timsort run 적응, 분포별 comparison·temporary memory 분석.</li>
+          </ul>
+          <p style="margin-top:26px;padding-top:18px;border-top:1px solid #cbd5e1;color:#64748b;font-size:12px">실습 체크: 질문/metric → 7분포 → 5 RI → warm-up/interleave → 350회 correctness → raw samples → noise 진단 → guarded selection.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
